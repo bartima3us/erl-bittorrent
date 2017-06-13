@@ -1,0 +1,6 @@
+/ebin
+!/ebin/.gitkeep
+/.rebar
+/.idea
+*.beam
+*.torrent
