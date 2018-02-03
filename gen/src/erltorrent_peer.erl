@@ -11,7 +11,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/4]).
+-export([start_link/6]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -25,6 +25,8 @@
 
 -record(state, {
     torrent_name                         :: string(),
+    full_size                            :: integer(),
+    piece_size                           :: integer(),
     peer_ip                              :: tuple(),
     port                                 :: integer(),
     peer_id                              :: string(),
@@ -47,8 +49,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Peer, PeerId, Hash, FileName) ->
-        gen_server:start_link({local, ?SERVER}, ?MODULE, [Peer, PeerId, Hash, FileName], []).
+start_link(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
+        gen_server:start_link({local, ?SERVER}, ?MODULE, [Peer, PeerId, Hash, FileName, FullSize, PieceSize], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -66,15 +68,19 @@ start_link(Peer, PeerId, Hash, FileName) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{PeerIp, Port}, PeerId, Hash, TorrentName]) ->
+init([{PeerIp, Port}, PeerId, Hash, TorrentName, FullSize, PieceSize]) ->
     State = #state{
+        torrent_name = TorrentName,
+        full_size    = FullSize,
+        piece_size   = PieceSize,
         peer_ip      = PeerIp,
         port         = Port,
         peer_id      = PeerId,
-        hash         = Hash,
-        torrent_name = TorrentName
+        hash         = Hash
     },
     {ok, Socket} = connect(State),
+    ok = erltorrent_message:handshake(Socket, PeerId, Hash),
+    ok = get_packet(Socket),
     {ok, State#state{socket = Socket}}.
 
 %%--------------------------------------------------------------------
@@ -121,8 +127,16 @@ handle_cast(_Msg, State) ->
 handle_info(connect, State) ->
     {noreply, State};
 
-handle_info(Info, #state{socket = Socket, rest = Rest, last_packet = {LastPacket, LastPacketLength}, bitfield = Bitfield} = State) ->
-    {tcp, _Port, Packet} = Info,
+handle_info({tcp, _Port, Packet}, State) ->
+    #state{
+        torrent_name = TorrentName,
+        full_size    = FullSize,
+        piece_size   = PieceSize,
+        socket       = Socket,
+        rest         = Rest,
+        last_packet  = {LastPacket, LastPacketLength},
+        bitfield     = Bitfield
+    } = State,
     io:format("------------------------~n"),
 %%    io:format("Got message!~n"),
     %% Jei yra baitų likutis iš anksčiau, tai prijungiame prie tik ką gauto paketo
@@ -133,7 +147,7 @@ handle_info(Info, #state{socket = Socket, rest = Rest, last_packet = {LastPacket
             undefined ->
                 Bitfield;
             TrueBitfield ->
-                interested(Socket),
+                ok = erltorrent_message:interested(Socket),
                 download_proc(Socket, TrueBitfield),
                 TrueBitfield
         end
@@ -144,7 +158,7 @@ handle_info(Info, #state{socket = Socket, rest = Rest, last_packet = {LastPacket
             undefined ->
                 ok;
             _KA ->
-                keep_alive(Socket),
+                ok = erltorrent_message:keep_alive(Socket),
                 ok
         end
     end,
@@ -176,8 +190,7 @@ handle_info(Info, #state{socket = Socket, rest = Rest, last_packet = {LastPacket
                     State#state{rest = NewRest, last_packet = {NewLastPacket, NewTrueLength}, bitfield = TakeBitfieldFun(Acc)}
             end
     end,
-    Val = get_packet(Socket),
-    io:format("Val=~p~n", [Val]),
+    ok = get_packet(Socket),
     io:format("------------------------~n"),
     {noreply, NewState};
 
@@ -221,67 +234,13 @@ code_change(_OldVsn, State, _Extra) ->
 connect(State) ->
     #state{
         peer_ip = PeerIp,
-        port    = Port,
-        peer_id = PeerId,
-        hash    = Hash
+        port    = Port
     } = State,
     io:format("Trying to connect ~p:~p~n", [PeerIp, Port]),
     {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 5000),
     io:format("Connection successful. Socket=~p~n", [Socket]),
-    handshake(Socket, PeerId, Hash),
     {ok, Socket}.
 
-
-%%
-%%
-%%
-handshake(Socket, PeerId, Hash) ->
-    io:format("Trying to handshake. Socket=~p~n", [Hash]),
-    Request = [
-        19,
-        "BitTorrent protocol",
-        0,0,0,0,0,0,0,0,
-        Hash,
-        PeerId
-    ],
-    gen_tcp:send(Socket, list_to_binary(Request)),
-    io:format("Handshake successful. Socket=~p~n", [Socket]),
-    get_packet(Socket).
-
-
-%%
-%%
-%%
-interested(Socket) ->
-  % Reikia handlinti tiek po unchoke bitfield, tiek po bitfield - unchoke, nes jų tvarka neprognozuojama.
-  % @todo Taip pat reikia handlinti kartu su bitfield galimai krūvą have pranešimų.
-  io:format("Interested! ~p~n", [Socket]),
-  gen_tcp:send(Socket, <<00, 00, 00, 01, 2>>).
-
-
-%%
-%%
-%%
-keep_alive(Socket) ->
-  io:format("Keep-alive! ~p~n", [Socket]),
-  gen_tcp:send(Socket, <<00, 00, 00, 00>>).
-
-
-%%
-%%
-%%
-request_piece(Socket) ->
-    gen_tcp:send(
-        Socket,
-        <<
-            00, 00, 00, 16#13, % Message length
-            06, % Message type
-            00, 00, 00, 00, % Piece index
-            00, 00, 00, 00, % Begin offset of piece
-            00, 00, 16#10, 00 % Piece length
-        >>
-    ),
-    ok.
 
 %%
 %%

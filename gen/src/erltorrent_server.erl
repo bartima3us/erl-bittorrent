@@ -92,14 +92,14 @@ handle_call({download, Type}, _From, State) ->
     FileName = dict:fetch(<<"name">>, Info),
     Length = dict:fetch(<<"length">>, Info),
     Pieces = dict:fetch(<<"pieces">>, Info), % @todo verifikuoti kiekvieno piece parsiuntimą
-    Left = dict:fetch(<<"length">>, Info),
-    PieceLength = dict:fetch(<<"piece length">>, Info),
+    FullSize = dict:fetch(<<"length">>, Info),
+    PieceSize = dict:fetch(<<"piece length">>, Info),
     TrackerLink = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
 
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
 
     io:format("Length=~p bytes~n", [Length]),
-    io:format("Piece length=~p bytes~n", [PieceLength]),
+    io:format("Piece length=~p bytes~n", [PieceSize]),
     io:format("Name=~p~n", [FileName]),
 
     <<FirstHash:20/binary, _Rest/binary>> = Pieces,
@@ -109,7 +109,7 @@ handle_call({download, Type}, _From, State) ->
     HashBinString = erltorrent_sha1:binstring(BencodedInfo),
     Hash = erltorrent_helper:urlencode(HashBinString),
 
-    {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, Left),
+    {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
     PeersIP = case Type of
         inverse -> get_peers(dict:fetch(<<"peers">>, Result), []);
         reverse -> lists:reverse(get_peers(dict:fetch(<<"peers">>, Result), []))
@@ -117,7 +117,7 @@ handle_call({download, Type}, _From, State) ->
 
     io:format("All peers~p~n", [PeersIP]),
     [Peer|_] = PeersIP,
-    {ok, Pid} = erltorrent_peer:start_link(Peer, PeerId, HashBinString, FileName),
+    {ok, Pid} = erltorrent_peer:start_link(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize),
     MonitorRef = erlang:monitor(process, Pid),
     Pid ! connect,
     Reply = {ok, MonitorRef},
@@ -188,10 +188,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 %%
 %%
-connect_to_tracker(TrackerLink, Hash, PeerId, Left) ->
+connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
   inets:start(),
   Separator = case string:str(TrackerLink, "?") of 0 -> "?"; _ -> "&" end,
-  FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=61940&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(Left) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
+  FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=61940&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
   {ok, {{_Version, _Code, _ReasonPhrase}, _Headers, Body}} = httpc:request(get, {FullLink, []}, [], [{body_format, binary}]),
   erltorrent_bencoding:decode(Body).
 
