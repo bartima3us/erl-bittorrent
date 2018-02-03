@@ -4,3 +4,9 @@
 /.idea
 *.beam
 *.torrent
+gen/_build
+*.temp
+gen/temp/*
+!gen/temp/.gitkeep
+gen/downloads/*
+!gen/downloads/.gitkeep
