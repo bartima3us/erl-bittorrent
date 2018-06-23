@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : 03. Feb 2018 02.10
 %%%-------------------------------------------------------------------
--module(erltorrent_download).
+-module(erltorrent_chunk).
 -author("sarunas").
 
 -behaviour(gen_server).
@@ -25,9 +25,9 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {
-    piece_id        = undefined,
-    socket          = undefined,
-    piece_begin     = undefined,
+    piece_id        :: binary(),
+    socket          :: port(),
+    piece_begin     :: ,
     piece_length    = undefined
 }).
 
