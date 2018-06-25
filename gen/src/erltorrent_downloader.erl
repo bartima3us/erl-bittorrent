@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : 23. Jun 2018 08.33
 %%%-------------------------------------------------------------------
--module(erltorrent_packet2).
+-module(erltorrent_downloader).
 -author("sarunas").
 
 -behaviour(gen_server).
