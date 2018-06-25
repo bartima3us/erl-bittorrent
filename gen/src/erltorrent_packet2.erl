@@ -360,6 +360,7 @@ parse_test_() ->
     Data2 = <<Piece1/binary, Have1/binary>>,
     % Message for rainy day scenario
     <<PartBitfieldPayload1:18/bytes, PartBitfieldPayload2:44/bytes, PartBitfieldPayload3:22/bytes>> = BitFieldPayload1,
+    <<PartPiecePayload1:1/bytes, PartPiecePayload2:3/bytes, PartPiecePayload3:92/bytes>> = Piece1,
     RainyData1 = <<
         Handshake1/binary,
         00, 00, 00, 16#55, 05, PartBitfieldPayload1/binary
@@ -418,7 +419,10 @@ parse_test_() ->
             }
         ),
         %
-        % Rainy day scenario (full handshake message and bitfield message splitted in 3 packets)
+        % Rainy day scenario:
+        % * full handshake message
+        % * bitfield message splitted in 3 packets (possible to identify message from first packet)
+        % * piece message splitted in 3 packets (possible to identify message only from third packet)
         ?_assertEqual(
             parse(Pid, RainyData1),
             {ok, [{handshake, true}]}
@@ -430,6 +434,18 @@ parse_test_() ->
         ?_assertEqual(
             parse(Pid, PartBitfieldPayload3),
             {ok, [{bitfield, BitFieldRecord}]}
+        ),
+        ?_assertEqual(
+            parse(Pid, PartPiecePayload1),
+            {ok, []}
+        ),
+        ?_assertEqual(
+            parse(Pid, PartPiecePayload2),
+            {ok, []}
+        ),
+        ?_assertEqual(
+            parse(Pid, PartPiecePayload3),
+            {ok, [{piece, PieceRecord}]}
         )
     ].
 
