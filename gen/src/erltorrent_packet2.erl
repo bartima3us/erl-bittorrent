@@ -44,7 +44,7 @@
 
 -record(state, {
     parsed_data  :: [{message_type(), payload()}] | undefined, % @todo neaišku, ar reikia
-    rest         :: payload() | undefined     % If there are even not enough bytes left to identify next message - payload(). If we had enough bytes to identified last message but lack of payload bytes - #last_message{}
+    rest         :: payload() | undefined
 }).
 
 
