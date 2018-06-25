@@ -12,15 +12,20 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0]).
+-export([
+    start_link/0,
+    parse/2
+]).
 
 %% gen_server callbacks
--export([init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 %% API
 -export([identify/2]).
 
@@ -28,24 +33,20 @@
 -type payload()      :: binary().
 
 -record(piece_data, {
+    payload      :: payload(),
     length       :: binary(),
     piece_index  :: binary(),
     block_offset :: binary()
 }).
 
 -record(bitfield_data, {
-    length  :: binary()
-}).
-
--record(last_message, {
-    type    :: message_type(),
-    rest    :: payload() | undefined,
-    extra   :: #piece_data{} | #bitfield_data{} | undefined % Field for extra information (only for piece at the moment)
+    payload :: payload(),
+    length  :: binary() % @todo neaišku, ar reikia
 }).
 
 -record(state, {
     parsed_data  :: [{message_type(), payload()}] | undefined, % @todo neaišku, ar reikia
-    rest         :: payload() | #last_message{} | undefined     % If there are even not enough bytes left to identify next message - payload(). If we had enough bytes to identified last message but lack of payload bytes - #last_message{}
+    rest         :: payload() | undefined     % If there are even not enough bytes left to identify next message - payload(). If we had enough bytes to identified last message but lack of payload bytes - #last_message{}
 }).
 
 
@@ -63,6 +64,13 @@
 %%--------------------------------------------------------------------
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
+
+
+%% @doc
+%% Start parsing data (sync. call)
+%%
+parse(Pid, Data) ->
+    gen_server:call(Pid, {parse, Data}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -103,13 +111,6 @@ handle_call({parse, Data}, _From, State = #state{rest = Rest}) ->
     {FullData, MessageType, ExtraData} = case Rest of
         Rest when is_binary(Rest) ->
             {<<Rest/binary, Data/binary>>, undefined, undefined};
-        Rest when is_record(Rest, last_message) ->
-            #last_message{
-                type  = LastMessageType,
-                rest  = LastMessageRest,
-                extra = Extra
-            } = Rest,
-            {<<LastMessageRest/binary, Data/binary>>, LastMessageType, Extra};
         undefined ->
             {Data, undefined, undefined}
     end,
@@ -197,9 +198,6 @@ identify(<<19, _Label:19/bytes, _ReservedBytes:8/bytes, _Hash:20/bytes, _PeerId:
 
 %
 % Keep alive
-identify(keep_alive, {Data, _Extra = undefined}) ->
-    identify(<<0, 0, 0, 0, Data/bytes>>, []);
-
 identify(<<0, 0, 0, 0, Rest/bytes>>, Acc) ->
     io:format("------------------------~n"),
     io:format("Got keep-alive!~n"),
@@ -207,9 +205,6 @@ identify(<<0, 0, 0, 0, Rest/bytes>>, Acc) ->
 
 %
 % Choke
-identify(choke, {Data, _Extra = undefined}) ->
-    identify(<<0, 0, 0, 1, 0, Data/bytes>>, []);
-
 identify(<<0, 0, 0, 1, 0, Rest/bytes>>, Acc) ->
     io:format("------------------------~n"),
     io:format("Got choke!~n"),
@@ -217,9 +212,6 @@ identify(<<0, 0, 0, 1, 0, Rest/bytes>>, Acc) ->
 
 %
 % Uncoke
-identify(unchoke, {Data, _Extra = undefined}) ->
-    identify(<<0, 0, 0, 1, 1, Data/bytes>>, []);
-
 identify(<<0, 0, 0, 1, 1, Rest/bytes>>, Acc) ->
     io:format("------------------------~n"),
     io:format("Got unchoke!~n"),
@@ -227,9 +219,6 @@ identify(<<0, 0, 0, 1, 1, Rest/bytes>>, Acc) ->
 
 %
 % Interested
-identify(interested, {Data, _Extra = undefined}) ->
-    identify(<<0, 0, 0, 1, 2, Data/bytes>>, []);
-
 identify(<<0, 0, 0, 1, 2, Rest/bytes>>, Acc) ->
     io:format("------------------------~n"),
     io:format("Got interested!~n"),
@@ -237,9 +226,6 @@ identify(<<0, 0, 0, 1, 2, Rest/bytes>>, Acc) ->
 
 %
 % Not interested
-identify(not_interested, {Data, _Extra = undefined}) ->
-    identify(<<0, 0, 0, 1, 3, Data/bytes>>, []);
-
 identify(<<0, 0, 0, 1, 3, Rest/bytes>>, Acc) ->
     io:format("------------------------~n"),
     io:format("Got not interested!~n"),
@@ -247,9 +233,6 @@ identify(<<0, 0, 0, 1, 3, Rest/bytes>>, Acc) ->
 
 %
 % Have (fixed length, always 0005)
-identify(have, {Data, _Extra = undefined}) ->
-    identify(<<0, 0, 0, 5, 4, Data/bytes>>, []);
-
 identify(<<0, 0, 0, 5, 4, Data/bytes>>, Acc) ->
     io:format("------------------------~nGot have~n"),
     PayloadLength = 4, % Because we've already matched Idx=4
@@ -258,26 +241,20 @@ identify(<<0, 0, 0, 5, 4, Data/bytes>>, Acc) ->
 
 %
 % Bitfield
-identify(bitfield, {Data, _Extra = #bitfield_data{length = Length}}) ->
-    identify(<<Length/bytes, 5, Data/bytes>>, []);
-
-identify(<<Length:4/bytes, 5, Data/bytes>>, Acc) ->
+identify(FullData = <<Length:4/bytes, 5, Data/bytes>>, Acc) ->
     io:format("------------------------~nGot bitfield!~n"),
     <<FullLength:32>> = Length,     % Convert to integer (same as: <<FullLength:32/integer>> = Length)
     PayloadLength = FullLength - 1, % Because we've already matched Idx=5
     case Data of
         Data when byte_size(Data) < PayloadLength ->
-            LastMessage = #last_message{
-                type = bitfield,
-                rest = Data,
-                extra = #bitfield_data{
-                    length = Length
-                }
-            },
-            {ok, Acc, LastMessage};
+            {ok, Acc, FullData};
         Data ->
             <<Payload:PayloadLength/binary, Rest/binary>> = Data,
-            identify(Rest, [{bitfield, Payload} | Acc])
+            BitField = #bitfield_data{
+                payload = Payload,
+                length  = Length
+            },
+            identify(Rest, [{bitfield, BitField} | Acc])
     end;
 
 %
@@ -289,29 +266,23 @@ identify(<<0, 0, 0, 13, 6, _PieceIndex:4/bytes, _BlockOffset:4/bytes, _BlockLeng
 
 %
 % Piece (length = 16384 bytes (piece size) + 9 (piece: <len=0009+X><id=7><index><begin><block>))
-identify(piece, {Data, _Extra = #piece_data{length = Length, piece_index = PieceIndex, block_offset = BlockOffset}}) ->
-    identify(<<Length/bytes, 7, PieceIndex/bytes, BlockOffset/bytes, Data/bytes>>, []);
-
-identify(<<Length:4/bytes, 7, PieceIndex:4/bytes, BlockOffset:4/bytes, Data/bytes>>, Acc) ->
+identify(FullData = <<Length:4/bytes, 7, PieceIndex:4/bytes, BlockOffset:4/bytes, Data/bytes>>, Acc) ->
     io:format("------------------------~n"),
     io:format("Got piece!~n"),
     <<FullLength:32>> = Length,      % Convert to integer
     PayloadLength = FullLength - 13, % Because we've already matched length, Idx, PieceIndex and BlockOffset (only piece length size includes itself size!)
     case Data of
         Data when byte_size(Data) < PayloadLength ->
-            LastMessage = #last_message{
-                type   = piece,
-                rest   = Data,
-                extra  = #piece_data{
-                    length       = PayloadLength,
-                    piece_index  = PieceIndex,
-                    block_offset = BlockOffset
-                }
-            },
-            {ok, Acc, LastMessage};
+            {ok, Acc, FullData};
         Data ->
             <<Payload:PayloadLength/bytes, Rest/bytes>> = Data,
-            identify(Rest, [{piece, Payload} | Acc])
+            Piece = #piece_data{
+                payload      = Payload,
+                length       = Length,
+                piece_index  = PieceIndex,
+                block_offset = BlockOffset
+            },
+            identify(Rest, [{piece, Piece} | Acc])
     end;
 
 identify(Data, Acc) ->
@@ -365,9 +336,19 @@ parse_test_() ->
     NotInterested1 = <<00, 00, 00, 01, 03>>,
     Have1 = <<00, 00, 00, 05, 04, HavePayload1/binary>>,
     BitField = <<00, 00, 00, 16#55, 05, BitFieldPayload1/binary>>,
+    BitFieldRecord = #bitfield_data{
+        payload = BitFieldPayload1,
+        length  =  <<00, 00, 00, 16#55>>
+    },
     % @todo "request" message test
     % FullLength = 96 bytes
     Piece1 = <<16#00, 16#00, 16#00, 16#60, 16#07, 16#00, 16#00, 16#01, 16#c8, 16#00, 16#00, 16#00, 16#00, PiecePayload1/binary>>,
+    PieceRecord = #piece_data{
+        payload      = PiecePayload1,
+        length       = <<16#00, 16#00, 16#00, 16#60>>,
+        piece_index  = <<16#00, 16#00, 16#01, 16#c8>>,
+        block_offset = <<16#00, 16#00, 16#00, 16#00>>
+    },
     % Concated message (packet)
     Data1 = <<
         Handshake1/binary,
@@ -407,90 +388,50 @@ parse_test_() ->
             identify(NotInterested1), {ok, [{not_interested, true}], undefined}
         ),
         ?_assertEqual(
-            identify(Piece1), {ok, [{piece, PiecePayload1}], undefined}
+            identify(Piece1), {ok, [{piece, PieceRecord}], undefined}
         ),
         ?_assertEqual(
             identify(Have1), {ok, [{have, HavePayload1}], undefined}
         ),
         ?_assertEqual(
-            identify(BitField), {ok, [{bitfield, BitFieldPayload1}], undefined}
-        ),
-        %
-        % Happy day each message in other format scenario
-        ?_assertEqual(
-            identify(keep_alive, {<<>>, undefined}), {ok, [{keep_alive, true}], undefined}
-        ),
-        ?_assertEqual(
-            identify(choke, {<<>>, undefined}), {ok, [{choke, true}], undefined}
-        ),
-        ?_assertEqual(
-            identify(unchoke, {<<>>, undefined}), {ok, [{unchoke, true}], undefined}
-        ),
-        ?_assertEqual(
-            identify(interested, {<<>>, undefined}), {ok, [{interested, true}], undefined}
-        ),
-        ?_assertEqual(
-            identify(not_interested, {<<>>, undefined}), {ok, [{not_interested, true}], undefined}
-        ),
-        ?_assertEqual(
-            identify(piece, {
-                PiecePayload1,
-                #piece_data{
-                    length       = <<00, 00, 00, 16#60>>,
-                    piece_index  = <<00, 00, 01, 16#c8>>,
-                    block_offset = <<00, 00, 00, 00>>
-                }
-            }),
-            {ok, [{piece, PiecePayload1}], undefined}
-        ),
-        ?_assertEqual(
-            identify(have, {HavePayload1, undefined}), {ok, [{have, HavePayload1}], undefined}
-        ),
-        ?_assertEqual(
-            identify(bitfield, {
-                BitFieldPayload1,
-                #bitfield_data{
-                    length = <<00, 00, 00, 16#55>>
-                }
-            }),
-            {ok, [{bitfield, BitFieldPayload1}], undefined}
+            identify(BitField), {ok, [{bitfield, BitFieldRecord}], undefined}
         ),
         %
         % Happy day packet (many messages) scenario
         ?_assertEqual(
-            gen_server:call(Pid, {parse, Data1}),
+            parse(Pid, Data1),
             {ok, [
                     {have, HavePayload1},
-                    {piece, PiecePayload1},
+                    {piece, PieceRecord},
                     {have, HavePayload1},
-                    {piece, PiecePayload1},
+                    {piece, PieceRecord},
                     {unchoke, true},
-                    {bitfield, BitFieldPayload1},
+                    {bitfield, BitFieldRecord},
                     {handshake, true}
                  ]
             }
         ),
         ?_assertEqual(
-            gen_server:call(Pid, {parse, Data2}),
+            parse(Pid, Data2),
             {ok, [
                     {have, HavePayload1},
-                    {piece, PiecePayload1}
+                    {piece, PieceRecord}
                  ]
             }
         ),
         %
         % Rainy day scenario (full handshake message and bitfield message splitted in 3 packets)
         ?_assertEqual(
-            gen_server:call(Pid, {parse, RainyData1}),
+            parse(Pid, RainyData1),
             {ok, [{handshake, true}]}
         ),
         ?_assertEqual(
-            gen_server:call(Pid, {parse, PartBitfieldPayload2}),
+            parse(Pid, PartBitfieldPayload2),
             {ok, []}
         ),
         ?_assertEqual(
-            gen_server:call(Pid, {parse, PartBitfieldPayload3}),
-            {ok, [{bitfield, BitFieldPayload1}]}
+            parse(Pid, PartBitfieldPayload3),
+            {ok, [{bitfield, BitFieldRecord}]}
         )
     ].
 
