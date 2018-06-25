@@ -26,8 +26,6 @@
     terminate/2,
     code_change/3
 ]).
-%% API
--export([identify/2]).
 
 -type message_type() :: choke | unchoke | interested | uninterested | have | bitfield | request | piece | cancel.
 -type payload()      :: binary().
