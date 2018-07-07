@@ -20,7 +20,8 @@
     download/0,
     download/1,
     piece_peers/1,
-    downloading_piece/1
+    downloading_piece/1,
+    is_end/0
 ]).
 
 %% gen_server callbacks
@@ -48,7 +49,9 @@
     pieces_amount                    :: integer(),
     peer_id,
     hash,
-    piece_length                     :: integer()
+    piece_length                     :: integer(),
+    last_piece_length                :: integer(),
+    last_piece_id                    :: integer()
 }).
 
 %%%===================================================================
@@ -73,6 +76,9 @@ piece_peers(Id) ->
 
 downloading_piece(Id) ->
     gen_server:call(?SERVER, {downloading_piece, Id}).
+
+is_end() ->
+    gen_server:call(?SERVER, is_end).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -141,7 +147,7 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
 %%    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
 
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
-    HashBinString = erltorrent_sha1:binstring(BencodedInfo),
+    HashBinString = erltorrent_sha1:binstring(BencodedInfo), % @todo pakeisti į crypto:hash(sha, BencodedInfo)
     Hash = erltorrent_helper:urlencode(HashBinString),
 
     {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
@@ -158,11 +164,13 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
         end,
         PeersIP
     ),
+    LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
+    LastPieceId = PiecesAmount - 1,
     % Fill empty peaces peers and downloading pieces
-    IdsList = lists:seq(0, PiecesAmount - 1),
+    IdsList = lists:seq(0, LastPieceId),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
     NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
-    {reply, ok, State#state{pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers, downloading_pieces = NewDownloadingPieces, peer_id = PeerId, hash = HashBinString, piece_length = PieceSize}};
+    {reply, ok, State#state{pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers, downloading_pieces = NewDownloadingPieces, peer_id = PeerId, hash = HashBinString, piece_length = PieceSize, last_piece_length = LastPieceLength, last_piece_id = LastPieceId}};
 
 %%
 %%
@@ -180,6 +188,18 @@ handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = 
         {value, Value}  -> Value;
         false           -> {error, piece_id_not_exist}
     end,
+    {reply, Result, State};
+
+%%
+%%
+handle_call(is_end, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
+    Result = lists:filter(
+        fun
+            (#downloading_piece{status = completed}) -> false;
+            (#downloading_piece{status = _})         -> true
+        end,
+        DownloadingPieces
+    ),
     {reply, Result, State};
 
 %%
@@ -247,8 +267,8 @@ handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers
 %% Assign pieces for peers to download
 %% @todo reikia handlinti {error,emfile} bandant atidaryt socketą. Ši klaida reiškia, jog OS atsisako atidaryti daugiau socketų
 %% @todo need test
-handle_info(assign_downloading_pieces, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash, piece_length = PieceLength}) ->
-    NewDownloadingPieces = assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength),
+handle_info(assign_downloading_pieces, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash, piece_length = PieceLength, last_piece_length = LastPieceLength, last_piece_id = LastPieceId}) ->
+    NewDownloadingPieces = assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId),
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
 %% @doc
@@ -288,13 +308,13 @@ handle_info(_Info, State) ->
 %% @doc
 %%
 %%
-assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength) ->
-    assign_downloading_pieces(DownloadingPieces, [], [], PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength).
+assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId) ->
+    assign_downloading_pieces(DownloadingPieces, [], [], PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId).
 
-assign_downloading_pieces([], Acc, _AlreadyAssigned, _PiecesPeers, _DownloadingPieces, _PeerId, _Hash, _PieceLength) ->
+assign_downloading_pieces([], Acc, _AlreadyAssigned, _PiecesPeers, _DownloadingPieces, _PeerId, _Hash, _PieceLength, _LastPieceLength, _LastPieceId) ->
     Acc;
 
-assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength) ->
+assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId) ->
     Peers = dict:fetch(Id, PiecesPeers),
     AllowedPeers = lists:filter(
         fun (Peer) ->
@@ -308,7 +328,11 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
     ),
     DownloadingPiece = case AllowedPeers of
         [{Ip, Port}|_] ->
-            {ok, Pid} = erltorrent_downloader:start("0", Id, Ip, Port, self(), PeerId, Hash, PieceLength),
+            CurrentPieceLength = case Id =:= LastPieceId of
+                 true  -> LastPieceLength;
+                 false -> PieceLength
+            end,
+            {ok, Pid} = erltorrent_downloader:start("[Commie] Banana Fish - 01 [3600C7D5].mkv", Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
             Ref = erlang:monitor(process, Pid),
             NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
             #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
@@ -316,10 +340,10 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
             NewAlreadyAssigned = AlreadyAssigned,
             #downloading_piece{piece_id = Id}
     end,
-    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength);
+    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId);
 
-assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength) ->
-    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength).
+assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId) ->
+    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId).
 
 
 %%--------------------------------------------------------------------

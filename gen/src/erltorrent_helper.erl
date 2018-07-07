@@ -17,7 +17,13 @@
     concat_file/1,
     get_packet/1,
     bin_piece_id_to_int/1,
-    int_piece_id_to_bin/1
+    int_piece_id_to_bin/1,
+    confirm_hash/1,
+    get_little_piece/2,
+    compare_little_piece/2,
+    get_meta_data/0,
+    compare_last_piece/0,
+    compare_files/2
 ]).
 
 %% 432D7D1A 0B153F3F 5CE1B453 C367A5B5 5DF453E9
@@ -117,32 +123,157 @@ get_packet(Socket) ->
 %%
 %%
 concat_file(TorrentName) ->
-    {ok, Chunks} = file:list_dir(filename:join(["temp", TorrentName])),
-    WriteChunkFun = fun(Chunk) ->
-        write_piece(TorrentName, Chunk)
-    end,
-    lists:map(WriteChunkFun, Chunks),
-    ok.
-
-
-%%
-%%
-%%
-write_piece(TorrentName, Chunk) ->
-    {ok, Pieces} = file:list_dir(filename:join(["temp", TorrentName, Chunk])),
+    {ok, Pieces} = file:list_dir(filename:join(["temp", TorrentName])),
     WritePieceFun = fun(Piece) ->
-        write_little_piece(TorrentName, Chunk, Piece)
+        write_piece(TorrentName, Piece)
     end,
-    lists:map(WritePieceFun, Pieces),
+    lists:map(WritePieceFun, sort(Pieces)),
     ok.
 
 
 %%
 %%
 %%
-write_little_piece(TorrentName, Chunk, Piece) ->
-    {ok, Content} = file:read_file(filename:join(["temp", TorrentName, Chunk, Piece])),
+write_piece(TorrentName, Piece) ->
+    {ok, LittlePieces} = file:list_dir(filename:join(["temp", TorrentName, Piece])),
+    WriteLittlePieceFun = fun(LittlePiece) ->
+        write_little_piece(TorrentName, Piece, LittlePiece)
+    end,
+    lists:map(WriteLittlePieceFun, sort_with_split(LittlePieces)),
+    ok.
+
+
+%%
+%%
+%%
+write_little_piece(TorrentName, Piece, LittlePiece) ->
+    {ok, Content} = file:read_file(filename:join(["temp", TorrentName, Piece, LittlePiece])),
     file:write_file(filename:join(["downloads", TorrentName]), Content, [append]),
     ok.
 
+
+%%
+%%
+%%
+sort(Files) ->
+    List2 = lists:map(fun (File) -> list_to_integer(File) end, Files),
+    List3 = lists:sort(List2),
+    lists:map(fun (File) -> integer_to_list(File) end, List3).
+
+
+%%
+%%
+%%
+sort_with_split(Files) ->
+    List2 = lists:map(
+        fun (File) ->
+            [Name, _Extension] = string:tokens(File, "."),
+            list_to_integer(Name)
+        end,
+        Files
+    ),
+    List3 = lists:sort(List2),
+    lists:map(fun (File) -> integer_to_list(File) ++ ".part" end, List3).
+
+%%%===================================================================
+%%% Debug functions
+%%%===================================================================
+
+
+
+%%
+%%
+%%
+confirm_hash(Piece) ->
+    File = filename:join(["torrents", "[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent"]),
+    {ok, Bin} = file:read_file(File),
+    {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
+    {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
+    Pieces = dict:fetch(<<"pieces">>, Info),
+    Exclude = list_to_integer(Piece) * 20,
+    <<_Off:Exclude/binary, FirstHash:20/binary, _Rest/binary>> = Pieces,
+    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
+
+    TorrentName = "[Commie] Banana Fish - 01 [3600C7D5].mkv",
+    write_piece(TorrentName, Piece),
+    {ok, DownloadedPiece} = file:read_file(filename:join(["downloads", TorrentName])),
+    DownloadedHash = crypto:hash(sha, DownloadedPiece),
+    io:format("Downloaded hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(DownloadedHash)]),
+    ok.
+
+
+%%
+%%
+%%
+get_little_piece(Piece, Offset) ->
+    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".part"]),
+    {ok, Bin} = file:read_file(File),
+    file:write_file("test.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
+    ok.
+
+
+%%
+%%
+%%
+compare_little_piece(Piece, Offset) ->
+    Exclude = trunc(list_to_integer(Piece) * 16384 * 64 + (list_to_integer(Offset) / 16384) * 16384),
+    {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
+    <<_:Exclude/binary, CuttedOriginal:16384/binary, Rest/binary>> = OriginalFileBin,
+    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".part"]),
+    {ok, Bin} = file:read_file(File),
+    io:format("Rest byte size=~p", [byte_size(Rest)]),
+    file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
+    file:write_file("test_original.txt", erltorrent_bin_to_hex:bin_to_hex(CuttedOriginal)),
+    ok.
+
+
+%%
+%%
+%%
+compare_files(Piece, Offset) ->
+    Exclude = trunc(list_to_integer(Piece) * 16384 * 64 + (list_to_integer(Offset) / 16384) * 16384),
+    {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
+    {ok, MyFileBin} = file:read_file("downloads/[Commie] Banana Fish - 01 [3600C7D5].mkv"),
+    <<_:Exclude/binary, CuttedOriginal:16384/binary, _RestOriginal/binary>> = OriginalFileBin,
+    <<_:Exclude/binary, CuttedMy:16384/binary, _RestMy/binary>> = MyFileBin,
+    file:write_file("test_original.txt", erltorrent_bin_to_hex:bin_to_hex(CuttedOriginal)),
+    file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(CuttedMy)),
+    ok.
+
+%%
+%%
+%%
+compare_last_piece() ->
+    Exclude = trunc(203 * 16384 * 64 + (573440 / 16384) * 16384),
+    {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
+    <<_:Exclude/binary, _CuttedOriginal:16384/binary, Rest/binary>> = OriginalFileBin,
+    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", "203", "589824" ++ ".part"]),
+    {ok, Bin} = file:read_file(File),
+    io:format("Rest byte size=~p", [byte_size(Rest)]),
+    file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
+    file:write_file("test_original.txt", erltorrent_bin_to_hex:bin_to_hex(Rest)),
+    ok.
+
+
+%%
+%%
+%%
+get_meta_data() ->
+    File = filename:join(["torrents", "[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent"]),
+    {ok, Bin} = file:read_file(File),
+    {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
+    {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
+    FileName = dict:fetch(<<"name">>, Info),
+    Pieces = dict:fetch(<<"pieces">>, Info), % @todo verifikuoti kiekvieno piece parsiuntimą
+    FullSize = dict:fetch(<<"length">>, Info),
+    PieceSize = dict:fetch(<<"piece length">>, Info),
+    TrackerLink = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
+    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
+    LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
+    io:format("File name = ~p~n", [FileName]),
+    io:format("Piece size = ~p bytes~n", [PieceSize]),
+    io:format("Full file size = ~p~n", [FullSize]),
+    io:format("Pieces amount = ~p~n", [PiecesAmount]),
+    io:format("LastPieceLength = ~p~n", [LastPieceLength]),
+    ok.
 

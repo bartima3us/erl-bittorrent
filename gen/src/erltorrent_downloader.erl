@@ -42,7 +42,8 @@
     peer_state      = choke     :: choke | unchoke,
     give_up_limit   = 3         :: integer(), % How much tries to get unchoke before giveup
     peer_id,
-    hash
+    hash,
+    last_action
 }).
 
 % @todo išhardkodinti, nes visas failas gali būti mažesnis už šitą skaičių
@@ -89,7 +90,8 @@ init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength]) -
         server_pid      = ServerPid,
         peer_id         = PeerId,
         hash            = Hash,
-        piece_length    = PieceLength
+        piece_length    = PieceLength,
+        last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time())
     },
     self() ! start,
     {ok, State}.
@@ -161,6 +163,7 @@ handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerI
     {ok, ParserPid} = erltorrent_packet:start_link(),
     ok = erltorrent_message:handshake(Socket, PeerId, Hash),
     ok = erltorrent_helper:get_packet(Socket),
+    erlang:send_after(15000, self(), is_alive),
     {noreply, State#state{socket = Socket, parser_pid = ParserPid}};
 
 
@@ -206,7 +209,7 @@ handle_info({tcp, _Port, Packet}, State) ->
             <<PieceBegin:32>> = BlockOffset,
             FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".part"]),
             filelib:ensure_dir(FileName),
-            file:write_file(FileName, Payload, [append]),
+            file:write_file(FileName, Payload),
             {true, Piece};
        (_Else) ->
            false
@@ -227,10 +230,16 @@ handle_info({tcp, _Port, Packet}, State) ->
             ok = erltorrent_helper:get_packet(Socket),
             Count
     end,
-    {noreply, State#state{count = NewCount, peer_state = NewPeerState}};
+    {noreply, State#state{count = NewCount, peer_state = NewPeerState, last_action = calendar:datetime_to_gregorian_seconds(calendar:local_time())}};
 
-handle_info({tcp, Port, _Packet}, State) ->
-    io:format("Packet from unknown port = ~p~n", [Port]),
+handle_info(is_alive, State = #state{last_action = LastAction}) ->
+    erlang:send_after(15000, self(), is_alive),
+    CurrentTime = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+    case CurrentTime - LastAction >= 15 of
+        % @todo pagalvoti, ar reikia atskirai handlinti serveryje timeouted.
+        true  -> exit(self(), timeouted);
+        false -> ok
+    end,
     {noreply, State};
 
 handle_info(_Info, State) ->
