@@ -271,7 +271,7 @@ identify(FullData = <<Length:4/bytes, 7, PieceIndex:4/bytes, BlockOffset:4/bytes
             Piece = #piece_data{
                 payload      = Payload,
                 length       = Length,
-                piece_index  = PieceIndex,
+                piece_index  = erltorrent_helper:bin_piece_id_to_int(PieceIndex),
                 block_offset = BlockOffset
             },
             identify(Rest, [{piece, Piece} | Acc])
@@ -467,7 +467,7 @@ parse_test_() ->
     PieceRecord = #piece_data{
         payload      = PiecePayload1,
         length       = <<16#00, 16#00, 16#00, 16#60>>,
-        piece_index  = <<16#00, 16#00, 16#01, 16#c8>>,
+        piece_index  = erltorrent_helper:bin_piece_id_to_int(<<16#00, 16#00, 16#01, 16#c8>>),
         block_offset = <<16#00, 16#00, 16#00, 16#00>>
     },
     % Concated message (packet)
