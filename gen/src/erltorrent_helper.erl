@@ -7,14 +7,17 @@
 %%% Created : 01. Jun 2017 15.59
 %%%-------------------------------------------------------------------
 -module(erltorrent_helper).
--author("sarunas").
+-author("bartimaeus").
 
 %% API
 -export([
     urlencode/1,
     random/1,
     convert_to_list/1,
-    concat_file/1
+    concat_file/1,
+    get_packet/1,
+    bin_piece_id_to_int/1,
+    int_piece_id_to_bin/1
 ]).
 
 %% 432D7D1A 0B153F3F 5CE1B453 C367A5B5 5DF453E9
@@ -71,6 +74,19 @@ urlencode(String) ->
 %%
 %%
 %%
+bin_piece_id_to_int(PieceId) when is_binary(PieceId) ->
+    <<Id:32>> = PieceId,
+    Id.
+
+%%
+%%
+%%
+int_piece_id_to_bin(PieceId) when is_integer(PieceId) ->
+    <<PieceId:32>>.
+
+%%
+%%
+%%
 random(Length) ->
     L = [0,1,2,3,4,5,6,7,8,9,"Q","W","E","R","T","Y","U","I","O","P","A","S","D","F","G","H","J","K","L","Z","X","C","V","B","N","M"],
     RandomList = [X||{_,X} <- lists:sort([ {random:uniform(), N} || N <- L])],
@@ -88,6 +104,13 @@ convert_to_list(Var) when is_integer(Var) ->
 
 convert_to_list(Var) when is_list(Var) ->
     Var.
+
+
+%%
+%%
+%%
+get_packet(Socket) ->
+    inet:setopts(Socket, [{active, once}]).
 
 
 %%
@@ -121,3 +144,5 @@ write_piece(TorrentName, Chunk, Piece) ->
     {ok, Content} = file:read_file(filename:join(["temp", TorrentName, Chunk, Piece])),
     file:write_file(filename:join(["downloads", TorrentName]), Content, [append]),
     ok.
+
+

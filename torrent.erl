@@ -32,6 +32,9 @@
 
 %% bittorrent or http or ip.src == 78.61.170.219 or ip.dst == 78.61.170.219
 %% (bittorrent or http) and ip.dst != 239.255.255.250
+%% tcp.port eq 25
+
+% https://github.com/richcarl/eunit/blob/master/examples/eunit_examples.erl
 
 get_peers_ip(<<>>, Result) ->
   lists:reverse(Result);

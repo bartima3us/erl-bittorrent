@@ -7,9 +7,12 @@
 %%% Created : 23. Jun 2018 08.33
 %%%-------------------------------------------------------------------
 -module(erltorrent_downloader).
--author("sarunas").
+-compile([{parse_transform, lager_transform}]).
+-author("bartimaeus").
 
 -behaviour(gen_server).
+
+-include("erltorrent.hrl").
 
 %% API
 -export([
@@ -75,6 +78,7 @@ start_link(TorrentId, PieceId, PeerIp, Port) ->
 init([TorrentId, PieceId, PeerIp, Port]) ->
     {ok, Socket} = do_connect(PeerIp, Port),
     {ok, ParserPid} = erltorrent_packet:start_link(),
+    ok = erltorrent_message:interested(Socket),
     State = #state{
         torrent_id  = TorrentId,
         peer_ip     = PeerIp,
@@ -152,19 +156,30 @@ handle_info({tcp, Port, Packet}, State = #state{port = Port}) ->
         torrent_id  = TorrentId,
         port        = Port,
         count       = Count,
-        parser_pid  = ParserPid
+        parser_pid  = ParserPid,
+        socket      = Socket
     } = State,
-    % @todo mapfilter from Data only piece packets
-    % @todo jei nieko negrąžina parse/2, kviesti erltorrent_helper:get_packet(Socket), kol grąžins
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     PieceId = 0,    % @todo fill in mapfilter
     PieceBegin = 0, % @todo fill in mapfilter
-    file:write_file(
-        filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin)]),
-        Packet,
-        [append]
-    ),
-    start_download(),
+    % We need to loop because we can receive more than 1 peace at the same time
+    WriteFun = fun
+        ({peace, Peace = #piece_data{payload = Payload, piece_index = PieceIndex, block_offset = BlockOffset}}) ->
+            <<PieceId:32>> = PieceIndex,
+            <<PieceBegin:32>> = BlockOffset,
+            file:write_file(
+                filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin)]),
+                Payload,
+                [append]
+            ),
+            {true, Peace};
+       (_Else) ->
+           false
+    end,
+    case lists:filtermap(WriteFun, Data) of
+        [_|_]   -> start_download();                    % If we have received any peace, go to another one
+        _       -> erltorrent_helper:get_packet(Socket) % If we haven't received any peace, take more from socket
+    end,
     {noreply, State#state{count = Count + 1}};
 
 handle_info({tcp, Port, _Packet}, State) ->

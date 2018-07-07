@@ -1,1 +1,14 @@
-[].
+{"1.1.0",
+[{<<"goldrush">>,{pkg,<<"goldrush">>,<<"0.1.9">>},1},
+ {<<"lager">>,
+  {git,"https://github.com/erlang-lager/lager",
+       {ref,"222293143f4c3379b09d83658c42787303662b23"}},
+  0},
+ {<<"meck">>,
+  {git,"https://github.com/eproxus/meck",
+       {ref,"b8f1432f4860443022ada82c55f9f42ecad0ed85"}},
+  0}]}.
+[
+{pkg_hash,[
+ {<<"goldrush">>, <<"F06E5D5F1277DA5C413E84D5A2924174182FB108DABB39D5EC548B27424CD106">>}]}
+].

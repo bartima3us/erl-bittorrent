@@ -10,3 +10,6 @@ gen/temp/*
 !gen/temp/.gitkeep
 gen/downloads/*
 !gen/downloads/.gitkeep
+gen/src/test_send.erl
+gen/log/*
+!gen/log/.gitkeep
