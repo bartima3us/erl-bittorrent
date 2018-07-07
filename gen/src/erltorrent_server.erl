@@ -19,30 +19,36 @@
     start_link/0,
     download/0,
     download/1,
-    piece_peers/1
+    piece_peers/1,
+    downloading_piece/1
 ]).
 
 %% gen_server callbacks
--export([init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
 ]).
 
 -define(SERVER, ?MODULE).
 
 -record(downloading_piece, {
-    ip,
-    port,
-    peace_id :: piece_id_int()
+    piece_id            :: piece_id_int(),
+    ip                  :: tuple(),
+    port                :: integer(),
+    monitor_ref         :: reference(),
+    status      = false :: downloading | completed | false
 }).
 
 -record(state, {
     pieces_peers       = dict:new(),
-    downloading_pieces = []          :: [{reference(), #downloading_piece{}}], % Key is monitor ref
-    pieces_amount                    :: integer()
+    downloading_pieces = []          :: [#downloading_piece{}],
+    pieces_amount                    :: integer(),
+    peer_id,
+    hash
 }).
 
 %%%===================================================================
@@ -54,15 +60,19 @@
 %% application:start(erltorrent).
 %% erltorrent_server:download().
 %% erltorrent_server:piece_peers(4).
+%% erltorrent_server:downloading_piece(0).
 %%
 download() ->
-    gen_server:call(?MODULE, {download, inverse}).
+    gen_server:call(?SERVER, {download, inverse}).
 
 download(r) ->
-    gen_server:call(?MODULE, {download, reverse}).
+    gen_server:call(?SERVER, {download, reverse}).
 
 piece_peers(Id) ->
-    gen_server:call(?MODULE, {peace_peers, Id}).
+    gen_server:call(?SERVER, {peace_peers, Id}).
+
+downloading_piece(Id) ->
+    gen_server:call(?SERVER, {downloading_piece, Id}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -148,15 +158,11 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
         end,
         PeersIP
     ),
-    % Fill empty peaces peers
-    NewPiecesPeers = lists:foldl(
-        fun (Id, Acc) ->
-            dict:store(Id, [], Acc)
-        end,
-        PiecesPeers,
-        lists:seq(0, PiecesAmount - 1)
-    ),
-    {reply, ok, State#state{pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers}};
+    % Fill empty peaces peers and downloading pieces
+    IdsList = lists:seq(0, PiecesAmount - 1),
+    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
+    NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
+    {reply, ok, State#state{pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers, downloading_pieces = NewDownloadingPieces, peer_id = PeerId, hash = HashBinString}};
 
 %%
 %%
@@ -164,6 +170,15 @@ handle_call({peace_peers, Id}, _From, State = #state{pieces_peers = PiecesPeers}
     Result = case dict:is_key(Id, PiecesPeers) of
         true  -> dict:fetch(Id, PiecesPeers);
         false -> {error, piece_id_not_exist}
+    end,
+    {reply, Result, State};
+
+%%
+%%
+handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
+    Result = case lists:keysearch(Id, #downloading_piece.piece_id, DownloadingPieces) of
+        {value, Value}  -> Value;
+        false           -> {error, piece_id_not_exist}
     end,
     {reply, Result, State};
 
@@ -196,15 +211,15 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({bitfield, ParsedBitfield, Ip}, State = #state{pieces_peers = PiecesPeers}) ->
+handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces}) ->
     NewPiecesPeers = dict:map(
         fun (Id, Peers) ->
             % Check if this IP has an iterating piece
             case proplists:get_value(Id, ParsedBitfield) of
                 Val when Val =:= true ->
                     % If there are not this IP in list yet, add it
-                    case lists:member(Ip, Peers) of
-                        false -> [Ip|Peers];
+                    case lists:member({Ip, Port}, Peers) of
+                        false -> [{Ip, Port}|Peers];
                         true  -> Peers
                     end;
                 _ ->
@@ -213,16 +228,61 @@ handle_info({bitfield, ParsedBitfield, Ip}, State = #state{pieces_peers = Pieces
         end,
         PiecesPeers
     ),
+    self() ! refresh_downloading_pieces,
     {noreply, State#state{pieces_peers = NewPiecesPeers}};
 
-handle_info({have, PieceId, Ip}, State = #state{pieces_peers = PiecesPeers}) ->
+%%
+%%
+handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers}) ->
     Peers = dict:fetch(PieceId, PiecesPeers),
-    NewPeers = case lists:member(Ip, Peers) of
-        false -> [Ip|Peers];
+    NewPeers = case lists:member({Ip, Port}, Peers) of
+        false -> [{Ip, Port}|Peers];
         true  -> Peers
     end,
     NewPiecesPeers = dict:store(PieceId, NewPeers, PiecesPeers),
+    self() ! refresh_downloading_pieces,
     {noreply, State#state{pieces_peers = NewPiecesPeers}};
+
+%% @todo reikia handlinti {error,emfile} bandant atidaryt socketą. Ši klaida reiškia, jog OS atsisako atidaryti daugiau socketų
+%% @todo need test
+handle_info(refresh_downloading_pieces, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash}) ->
+    NewDownloadingPieces = lists:map(
+        fun
+            (#downloading_piece{piece_id = Id, status = false}) ->
+                case dict:fetch(Id, PiecesPeers) of
+                    [{Ip, Port}|_] ->
+                        {ok, Pid} = erltorrent_downloader:start("0", Id, Ip, Port, self(), PeerId, Hash),
+                        Ref = erlang:monitor(process, Pid),
+                        #downloading_piece{piece_id = Id, ip = Ip, port = Port, monitor_ref = Ref, status = downloading};
+                    _     ->
+                        #downloading_piece{piece_id = Id}
+                end;
+            (Other) ->
+                Other
+        end,
+        DownloadingPieces
+    ),
+    {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
+
+%% @doc
+%% Remove process from downloading pieces if it crashes and move that peer into end of queue.
+%% @todo handle Reason (can be normal, killed, etc.)
+handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers}) ->
+    lager:info("xxxxxxxx DOWN"),
+    % Remove peer from downloading list
+    {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
+    #downloading_piece{piece_id = PieceId, ip = Ip, port = Port} = OldDownloadingPiece,
+    NewDownloadingPieces = lists:keyreplace(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces, #downloading_piece{piece_id = PieceId}),
+    % Move peer to the end of the queue
+    NewPiecesPeers = case dict:fetch(PieceId, PiecesPeers) of
+        Peers when length(Peers) > 0 ->
+            NewPeers = lists:append(lists:delete({Ip, Port}, Peers), [{Ip, Port}]),
+            dict:store(PieceId, NewPeers, PiecesPeers);
+        _ ->
+            PiecesPeers
+    end,
+    self() ! refresh_downloading_pieces,
+    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -239,6 +299,7 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
+    lager:info("xxxxxxxx Server terminate=~p", [_Reason]),
     ok.
 
 %%--------------------------------------------------------------------
@@ -290,27 +351,54 @@ get_peers(PeersList, Result) ->
 
 add_new_peer_to_pieces_peers_test_() ->
     Ip = {127,0,0,1},
+    Port = 9444,
     ParsedBitfield = [{0, true}, {1, false}, {2, true}, {3, true}],
     PiecesPeers1 = dict:store(0, [], dict:new()),
-    PiecesPeers2 = dict:store(1, [{127,0,0,2}], PiecesPeers1),
-    PiecesPeers3 = dict:store(2, [{127,0,0,3}, {127,0,0,2}], PiecesPeers2),
-    PiecesPeers4 = dict:store(3, [{127,0,0,1}], PiecesPeers3),
-    PiecesPeers5 = dict:store(0, [Ip], PiecesPeers4),
-    PiecesPeers6 = dict:store(2, [Ip, {127,0,0,3}, {127,0,0,2}], PiecesPeers5),
-    PiecesPeers7 = dict:store(3, [Ip], PiecesPeers6),
+    PiecesPeers2 = dict:store(1, [{{127,0,0,2}, 9874}], PiecesPeers1),
+    PiecesPeers3 = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecesPeers2),
+    PiecesPeers4 = dict:store(3, [{Ip, Port}], PiecesPeers3),
+    PiecesPeers5 = dict:store(0, [{Ip, Port}], PiecesPeers4),
+    PiecesPeers6 = dict:store(2, [{Ip, Port}, {{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecesPeers5),
+    PiecesPeers7 = dict:store(3, [{Ip, Port}], PiecesPeers6),
     State = #state{pieces_peers = PiecesPeers4},
     [
         ?_assertEqual(
             {noreply, #state{pieces_peers = PiecesPeers7}},
-            handle_info({bitfield, ParsedBitfield, Ip}, State)
+            handle_info({bitfield, ParsedBitfield, Ip, Port}, State)
         ),
         ?_assertEqual(
             {noreply, #state{pieces_peers = PiecesPeers4}},
-            handle_info({have, 3, Ip}, State)
+            handle_info({have, 3, Ip, Port}, State)
         ),
         ?_assertEqual(
             {noreply, #state{pieces_peers = PiecesPeers5}},
-            handle_info({have, 0, Ip}, State)
+            handle_info({have, 0, Ip, Port}, State)
+        )
+    ].
+
+
+remove_process_from_downloading_piece_test_() ->
+    PiecesPeers1 = dict:store(0, [], dict:new()),
+    PiecesPeers2 = dict:store(1, [{{127,0,0,7}, 9874}], PiecesPeers1),
+    PiecesPeers3 = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}, {{127,0,0,1}, 9612}], PiecesPeers2),
+    Ref1 = make_ref(),
+    Ref2 = make_ref(),
+    DownloadingPieces = [
+        #downloading_piece{piece_id = 0, status = false},
+        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip = {127,0,0,7}, port = 9874, status = downloading},
+        #downloading_piece{piece_id = 2, monitor_ref = Ref2, ip = {127,0,0,2}, port = 9614, status = downloading}
+    ],
+    NewDownloadingPieces = [
+        #downloading_piece{piece_id = 0, status = false},
+        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip = {127,0,0,7}, port = 9874, status = downloading},
+        #downloading_piece{piece_id = 2, status = false}
+    ],
+    NewPiecesPeers = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,1}, 9612}, {{127,0,0,2}, 9614}], PiecesPeers3),
+    State = #state{pieces_peers = PiecesPeers3, downloading_pieces = DownloadingPieces},
+    [
+        ?_assertEqual(
+            {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers}},
+            handle_info({'DOWN', Ref2, process, pid, normal}, State)
         )
     ].
 
@@ -331,6 +419,28 @@ get_piece_peers_test_() ->
         ?_assertEqual(
             {reply, {error, piece_id_not_exist}, State},
             handle_call({peace_peers, 2}, from, State)
+        )
+    ].
+
+
+get_downloading_piece_test_() ->
+    Piece1 = #downloading_piece{piece_id = 0, status = false},
+    Piece2 = #downloading_piece{piece_id = 1, ip = {127,0,0,7}, port = 9874, status = downloading},
+    Piece3 = #downloading_piece{piece_id = 2, ip = {127,0,0,2}, port = 9614, status = downloading},
+    DownloadingPieces = [Piece1, Piece2, Piece3],
+    State = #state{downloading_pieces = DownloadingPieces},
+    [
+        ?_assertEqual(
+            {reply, Piece1, State},
+            handle_call({downloading_piece, 0}, from, State)
+        ),
+        ?_assertEqual(
+            {reply, Piece2, State},
+            handle_call({downloading_piece, 1}, from, State)
+        ),
+        ?_assertEqual(
+            {reply, {error, piece_id_not_exist}, State},
+            handle_call({downloading_piece, 3}, from, State)
         )
     ].
 

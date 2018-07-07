@@ -153,14 +153,14 @@ handle_info({tcp, _Port, Packet}, State) ->
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
         true ->
-            lager:info("Received handshake from ~p:~p for file: ~p", [PeerIp, Port, TorrentName]),
+%%            lager:info("Received handshake from ~p:~p for file: ~p", [PeerIp, Port, TorrentName]),
             erltorrent_message:handshake(Socket, PeerId, Hash);
         _    ->
             ok
     end,
     ok = case proplists:get_value(keep_alive, Data) of
         true ->
-            lager:info("Received keep alive from ~p:~p for file: ~p", [PeerIp, Port, TorrentName]),
+%%            lager:info("Received keep alive from ~p:~p for file: ~p", [PeerIp, Port, TorrentName]),
             erltorrent_message:keep_alive(Socket);
         _    ->
             ok
@@ -169,16 +169,16 @@ handle_info({tcp, _Port, Packet}, State) ->
         undefined ->
             ok;
         BitField = #bitfield_data{parsed = ParsedBitfield} ->
-            lager:info("Received bitfield: ~p from ~p:~p for file: ~p", [BitField, PeerIp, Port, TorrentName]),
-            ServerPid ! {bitfield, ParsedBitfield, PeerIp},
+%%            lager:info("Received bitfield: ~p from ~p:~p for file: ~p", [BitField, PeerIp, Port, TorrentName]),
+            ServerPid ! {bitfield, ParsedBitfield, PeerIp, Port},
             ok
     end,
     ok = case proplists:get_value(have, Data) of
         undefined ->
             ok;
         PeaceId  ->
-            lager:info("Received have: ~p from ~p:~p for file: ~p", [PeaceId, PeerIp, Port, TorrentName]),
-            ServerPid ! {have, PeaceId, PeerIp},
+%%            lager:info("Received have: ~p from ~p:~p for file: ~p", [PeaceId, PeerIp, Port, TorrentName]),
+            ServerPid ! {have, PeaceId, PeerIp, Port},
             ok
     end,
     ok = erltorrent_helper:get_packet(Socket),
@@ -231,9 +231,9 @@ do_connect(State) ->
         peer_ip = PeerIp,
         port    = Port
     } = State,
-    io:format("Trying to connect ~p:~p~n", [PeerIp, Port]),
+%%    io:format("Trying to connect ~p:~p~n", [PeerIp, Port]),
     {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 5000),
-    io:format("Connection successful. Socket=~p~n", [Socket]),
+%%    io:format("Connection successful. Socket=~p~n", [Socket]),
     {ok, Socket}.
 
 

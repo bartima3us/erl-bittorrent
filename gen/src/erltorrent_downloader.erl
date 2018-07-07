@@ -16,7 +16,7 @@
 
 %% API
 -export([
-    start_link/4
+    start/7
 ]).
 
 %% gen_server callbacks
@@ -30,14 +30,19 @@
 ]).
 
 -record(state, {
-    torrent_id                     :: integer(), % Unique torrent ID in Mnesia
-    peer_ip                        :: tuple(),
-    port                           :: integer(),
-    socket                         :: port(),
-    piece_id                       :: binary(),
-    piece_length                   :: integer(), % Full length of piece
-    count        = 0               :: integer(),
-    parser_pid                     :: pid()
+    torrent_id                  :: integer(), % Unique torrent ID in Mnesia
+    peer_ip                     :: tuple(),
+    port                        :: integer(),
+    socket                      :: port(),
+    piece_id                    :: binary(),
+    piece_length                :: integer(), % Full length of piece
+    count           = 0         :: integer(),
+    parser_pid                  :: pid(),
+    server_pid                  :: pid(),
+    peer_state      = choke     :: choke | unchoke,
+    give_up_limit   = 3         :: integer(), % How much tries to get unchoke before giveup
+    peer_id,
+    hash
 }).
 
 % @todo išhardkodinti, nes visas failas gali būti mažesnis už šitą skaičių
@@ -56,8 +61,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(TorrentId, PieceId, PeerIp, Port) ->
-    gen_server:start_link(?MODULE, [TorrentId, PieceId, PeerIp, Port], []).
+start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash) ->
+    gen_server:start(?MODULE, [TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -75,18 +80,17 @@ start_link(TorrentId, PieceId, PeerIp, Port) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([TorrentId, PieceId, PeerIp, Port]) ->
-    {ok, Socket} = do_connect(PeerIp, Port),
-    {ok, ParserPid} = erltorrent_packet:start_link(),
-    ok = erltorrent_message:interested(Socket),
+init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash]) ->
     State = #state{
         torrent_id  = TorrentId,
         peer_ip     = PeerIp,
         port        = Port,
-        socket      = Socket,
         piece_id    = PieceId,
-        parser_pid  = ParserPid
+        server_pid  = ServerPid,
+        peer_id     = PeerId,
+        hash        = Hash
     },
+    self() ! start,
     {ok, State}.
 
 
@@ -119,12 +123,13 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast(download, State) ->
+handle_cast(request_piece, State) ->
     #state{
         socket       = Socket,
         piece_id     = PieceId,
         piece_length = PieceLength,
-        count        = Count
+        count        = Count,
+        peer_state   = PeerState
     } = State,
     {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
     % Check if file isn't downloaded yet
@@ -151,36 +156,78 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({tcp, Port, Packet}, State = #state{port = Port}) ->
+handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerId, hash = Hash}) ->
+    {ok, Socket} = do_connect(PeerIp, Port),
+    {ok, ParserPid} = erltorrent_packet:start_link(),
+    ok = erltorrent_message:handshake(Socket, PeerId, Hash),
+    ok = erltorrent_helper:get_packet(Socket),
+    {noreply, State#state{socket = Socket, parser_pid = ParserPid}};
+
+
+handle_info({tcp, _Port, Packet}, State) ->
     #state{
         torrent_id  = TorrentId,
         port        = Port,
         count       = Count,
         parser_pid  = ParserPid,
-        socket      = Socket
+        socket      = Socket,
+        peer_ip     = PeerIp,
+        peer_state  = PeerState
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
-    PieceId = 0,    % @todo fill in mapfilter
-    PieceBegin = 0, % @todo fill in mapfilter
-    % We need to loop because we can receive more than 1 peace at the same time
+    ok = case proplists:get_value(handshake, Data) of
+        true ->
+%%            lager:info("xxxxxxxxxx Received handshake from ~p:~p for file: ~p", [PeerIp, Port, TorrentId]),
+            ok = erltorrent_message:interested(Socket);
+        _    ->
+            ok
+    end,
+    % Identify new my peer state
+    % @todo implement unchoke waiting giveup
+    NewPeerState = lists:foldl(
+        fun
+            ({unchoke, true}, _Acc) -> unchoke;
+            ({choke, true}, _Acc) -> choke;
+            (_, Acc) -> Acc
+        end,
+        PeerState,
+        Data
+    ),
+    % If my peer state changed and new my peer state is unchoke, request for a piece
+    ok = case {NewPeerState =:= PeerState, NewPeerState} of
+        {false, unchoke} -> request_piece();
+        _                -> ok
+    end,
+%%    lager:info("xxxxxx Data=~p", [Data]),
+%%    lager:info("xxxxxx NewPeerState=~p", [NewPeerState]),
+    % We need to loop because we can receive more than 1 piece at the same time
     WriteFun = fun
-        ({peace, Peace = #piece_data{payload = Payload, piece_index = PieceIndex, block_offset = BlockOffset}}) ->
-            <<PieceId:32>> = PieceIndex,
+        ({piece, Piece = #piece_data{payload = Payload, piece_index = PieceId, block_offset = BlockOffset}}) ->
             <<PieceBegin:32>> = BlockOffset,
-            file:write_file(
-                filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin)]),
-                Payload,
-                [append]
-            ),
-            {true, Peace};
+            FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".part"]),
+            filelib:ensure_dir(FileName),
+            file:write_file(FileName, Payload, [append]),
+            {true, Piece};
        (_Else) ->
            false
     end,
-    case lists:filtermap(WriteFun, Data) of
-        [_|_]   -> start_download();                    % If we have received any peace, go to another one
-        _       -> erltorrent_helper:get_packet(Socket) % If we haven't received any peace, take more from socket
+    % Check current my peer state. If it's unchoke - request for piece. If it's choke - try to get unchoke by sending interested.
+    NewCount = case NewPeerState of
+        unchoke ->
+            case lists:filtermap(WriteFun, Data) of
+                [_|_]   ->
+                    request_piece(),                      % If we have received any piece, go to another one
+                    Count + 1;
+                _       ->
+                    erltorrent_helper:get_packet(Socket), % If we haven't received any piece, take more from socket
+                    Count
+            end;
+        choke ->
+            ok = erltorrent_message:interested(Socket),
+            ok = erltorrent_helper:get_packet(Socket),
+            Count
     end,
-    {noreply, State#state{count = Count + 1}};
+    {noreply, State#state{count = NewCount, peer_state = NewPeerState}};
 
 handle_info({tcp, Port, _Packet}, State) ->
     io:format("Packet from unknown port = ~p~n", [Port]),
@@ -226,9 +273,9 @@ code_change(_OldVsn, State, _Extra) ->
 %% Connect to peer
 %%
 do_connect(PeerIp, Port) ->
-    io:format("Trying to connect ~p:~p~n", [PeerIp, Port]),
-    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 5000),
-    io:format("Connection successful. Socket=~p~n", [Socket]),
+%%    lager:info("xxxxxxxx Trying to connect ~p:~p", [PeerIp, Port]),
+    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary]),
+%%    lager:info("xxxxxxxx Connection successful. Socket=~p", [Socket]),
     {ok, Socket}.
 
 
@@ -249,8 +296,8 @@ get_request_data(Count, PieceLength) ->
 %% @doc
 %% Start parsing data (sync. call)
 %%
-start_download() ->
-    gen_server:cast(self(), download).
+request_piece() ->
+    gen_server:cast(self(), request_piece).
 
 
 
