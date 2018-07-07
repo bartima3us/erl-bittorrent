@@ -205,7 +205,7 @@ handle_info(Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-        ok.
+    ok.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -216,7 +216,7 @@ terminate(_Reason, _State) ->
 %% @end
 %%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
-        {ok, State}.
+    {ok, State}.
 
 %%%===================================================================
 %%% Internal functions
@@ -232,7 +232,7 @@ do_connect(State) ->
         port    = Port
     } = State,
 %%    io:format("Trying to connect ~p:~p~n", [PeerIp, Port]),
-    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 5000),
+    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary]),
 %%    io:format("Connection successful. Socket=~p~n", [Socket]),
     {ok, Socket}.
 

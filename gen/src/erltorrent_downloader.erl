@@ -16,7 +16,7 @@
 
 %% API
 -export([
-    start/7
+    start/8
 ]).
 
 %% gen_server callbacks
@@ -61,8 +61,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash) ->
-    gen_server:start(?MODULE, [TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash], []).
+start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength) ->
+    gen_server:start(?MODULE, [TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -80,15 +80,16 @@ start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash]) ->
+init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength]) ->
     State = #state{
-        torrent_id  = TorrentId,
-        peer_ip     = PeerIp,
-        port        = Port,
-        piece_id    = PieceId,
-        server_pid  = ServerPid,
-        peer_id     = PeerId,
-        hash        = Hash
+        torrent_id      = TorrentId,
+        peer_ip         = PeerIp,
+        port            = Port,
+        piece_id        = PieceId,
+        server_pid      = ServerPid,
+        peer_id         = PeerId,
+        hash            = Hash,
+        piece_length    = PieceLength
     },
     self() ! start,
     {ok, State}.
@@ -128,8 +129,7 @@ handle_cast(request_piece, State) ->
         socket       = Socket,
         piece_id     = PieceId,
         piece_length = PieceLength,
-        count        = Count,
-        peer_state   = PeerState
+        count        = Count
     } = State,
     {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
     % Check if file isn't downloaded yet
@@ -138,7 +138,7 @@ handle_cast(request_piece, State) ->
             ok = erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength),
             ok = erltorrent_helper:get_packet(Socket);
         false ->
-            exit(self(), shutdown)
+            exit(self(), completed)
     end,
     {noreply, State};
 
@@ -274,7 +274,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 do_connect(PeerIp, Port) ->
 %%    lager:info("xxxxxxxx Trying to connect ~p:~p", [PeerIp, Port]),
-    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary]),
+    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 10000),
 %%    lager:info("xxxxxxxx Connection successful. Socket=~p", [Socket]),
     {ok, Socket}.
 
@@ -322,6 +322,10 @@ get_request_data_test_() ->
         ?_assertEqual(
             {ok, {1696, <<0, 1, 128, 0>>}},
             get_request_data(6, 100000)
+        ),
+        ?_assertEqual(
+            {ok, {-14688, <<0, 1, 192, 0>>}},
+            get_request_data(7, 100000)
         )
     ].
 

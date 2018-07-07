@@ -37,10 +37,9 @@
 
 -record(downloading_piece, {
     piece_id            :: piece_id_int(),
-    ip                  :: tuple(),
-    port                :: integer(),
+    ip_port             :: {tuple(), integer()},
     monitor_ref         :: reference(),
-    status      = false :: downloading | completed | false
+    status      = false :: false | downloading | completed
 }).
 
 -record(state, {
@@ -48,7 +47,8 @@
     downloading_pieces = []          :: [#downloading_piece{}],
     pieces_amount                    :: integer(),
     peer_id,
-    hash
+    hash,
+    piece_length                     :: integer()
 }).
 
 %%%===================================================================
@@ -162,7 +162,7 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
     IdsList = lists:seq(0, PiecesAmount - 1),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
     NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
-    {reply, ok, State#state{pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers, downloading_pieces = NewDownloadingPieces, peer_id = PeerId, hash = HashBinString}};
+    {reply, ok, State#state{pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers, downloading_pieces = NewDownloadingPieces, peer_id = PeerId, hash = HashBinString, piece_length = PieceSize}};
 
 %%
 %%
@@ -228,7 +228,7 @@ handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = 
         end,
         PiecesPeers
     ),
-    self() ! refresh_downloading_pieces,
+    self() ! assign_downloading_pieces,
     {noreply, State#state{pieces_peers = NewPiecesPeers}};
 
 %%
@@ -240,38 +240,35 @@ handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers
         true  -> Peers
     end,
     NewPiecesPeers = dict:store(PieceId, NewPeers, PiecesPeers),
-    self() ! refresh_downloading_pieces,
+    self() ! assign_downloading_pieces,
     {noreply, State#state{pieces_peers = NewPiecesPeers}};
 
+%% @doc
+%% Assign pieces for peers to download
 %% @todo reikia handlinti {error,emfile} bandant atidaryt socketą. Ši klaida reiškia, jog OS atsisako atidaryti daugiau socketų
 %% @todo need test
-handle_info(refresh_downloading_pieces, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash}) ->
-    NewDownloadingPieces = lists:map(
-        fun
-            (#downloading_piece{piece_id = Id, status = false}) ->
-                case dict:fetch(Id, PiecesPeers) of
-                    [{Ip, Port}|_] ->
-                        {ok, Pid} = erltorrent_downloader:start("0", Id, Ip, Port, self(), PeerId, Hash),
-                        Ref = erlang:monitor(process, Pid),
-                        #downloading_piece{piece_id = Id, ip = Ip, port = Port, monitor_ref = Ref, status = downloading};
-                    _     ->
-                        #downloading_piece{piece_id = Id}
-                end;
-            (Other) ->
-                Other
-        end,
-        DownloadingPieces
-    ),
+handle_info(assign_downloading_pieces, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash, piece_length = PieceLength}) ->
+    NewDownloadingPieces = assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength),
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
 %% @doc
 %% Remove process from downloading pieces if it crashes and move that peer into end of queue.
-%% @todo handle Reason (can be normal, killed, etc.)
+%%
+handle_info({'DOWN', MonitorRef, process, _Pid, completed}, State = #state{downloading_pieces = DownloadingPieces}) ->
+    {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
+    #downloading_piece{piece_id = PieceId} = OldDownloadingPiece,
+    NewDownloadingPieces = lists:keyreplace(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces, #downloading_piece{piece_id = PieceId, status = completed}),
+    self() ! assign_downloading_pieces,
+    {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
+
 handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers}) ->
     lager:info("xxxxxxxx DOWN"),
     % Remove peer from downloading list
     {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
-    #downloading_piece{piece_id = PieceId, ip = Ip, port = Port} = OldDownloadingPiece,
+    #downloading_piece{
+        piece_id = PieceId,
+        ip_port = {Ip, Port}
+    } = OldDownloadingPiece,
     NewDownloadingPieces = lists:keyreplace(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces, #downloading_piece{piece_id = PieceId}),
     % Move peer to the end of the queue
     NewPiecesPeers = case dict:fetch(PieceId, PiecesPeers) of
@@ -281,11 +278,49 @@ handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloa
         _ ->
             PiecesPeers
     end,
-    self() ! refresh_downloading_pieces,
+    self() ! assign_downloading_pieces,
     {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
+
+
+%% @doc
+%%
+%%
+assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength) ->
+    assign_downloading_pieces(DownloadingPieces, [], [], PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength).
+
+assign_downloading_pieces([], Acc, _AlreadyAssigned, _PiecesPeers, _DownloadingPieces, _PeerId, _Hash, _PieceLength) ->
+    Acc;
+
+assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength) ->
+    Peers = dict:fetch(Id, PiecesPeers),
+    AllowedPeers = lists:filter(
+        fun (Peer) ->
+            AlreadyDownloading = case lists:keysearch(Peer, #downloading_piece.ip_port, DownloadingPieces) of
+                false -> true;
+                _     -> false
+            end,
+            not(lists:member(Peer, AlreadyAssigned)) and AlreadyDownloading
+        end,
+        Peers
+    ),
+    DownloadingPiece = case AllowedPeers of
+        [{Ip, Port}|_] ->
+            {ok, Pid} = erltorrent_downloader:start("0", Id, Ip, Port, self(), PeerId, Hash, PieceLength),
+            Ref = erlang:monitor(process, Pid),
+            NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
+            #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
+        _ ->
+            NewAlreadyAssigned = AlreadyAssigned,
+            #downloading_piece{piece_id = Id}
+    end,
+    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength);
+
+assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength) ->
+    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength).
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -385,12 +420,12 @@ remove_process_from_downloading_piece_test_() ->
     Ref2 = make_ref(),
     DownloadingPieces = [
         #downloading_piece{piece_id = 0, status = false},
-        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip = {127,0,0,7}, port = 9874, status = downloading},
-        #downloading_piece{piece_id = 2, monitor_ref = Ref2, ip = {127,0,0,2}, port = 9614, status = downloading}
+        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip_port = {{127,0,0,7}, 9874}, status = downloading},
+        #downloading_piece{piece_id = 2, monitor_ref = Ref2, ip_port = {{127,0,0,2}, 9614}, status = downloading}
     ],
     NewDownloadingPieces = [
         #downloading_piece{piece_id = 0, status = false},
-        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip = {127,0,0,7}, port = 9874, status = downloading},
+        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip_port = {{127,0,0,7}, 9874}, status = downloading},
         #downloading_piece{piece_id = 2, status = false}
     ],
     NewPiecesPeers = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,1}, 9612}, {{127,0,0,2}, 9614}], PiecesPeers3),
@@ -399,6 +434,28 @@ remove_process_from_downloading_piece_test_() ->
         ?_assertEqual(
             {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers}},
             handle_info({'DOWN', Ref2, process, pid, normal}, State)
+        )
+    ].
+
+
+change_downloading_piece_status_to_completed_test_() ->
+    Ref1 = make_ref(),
+    Ref2 = make_ref(),
+    DownloadingPieces = [
+        #downloading_piece{piece_id = 0, status = false},
+        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip_port = {{127,0,0,7}, 9874}, status = downloading},
+        #downloading_piece{piece_id = 2, monitor_ref = Ref2, ip_port = {{127,0,0,2}, 9614}, status = downloading}
+    ],
+    NewDownloadingPieces = [
+        #downloading_piece{piece_id = 0, status = false},
+        #downloading_piece{piece_id = 1, monitor_ref = Ref1, ip_port = {{127,0,0,7}, 9874}, status = downloading},
+        #downloading_piece{piece_id = 2, status = completed}
+    ],
+    State = #state{downloading_pieces = DownloadingPieces},
+    [
+        ?_assertEqual(
+            {noreply, State#state{downloading_pieces = NewDownloadingPieces}},
+            handle_info({'DOWN', Ref2, process, pid, completed}, State)
         )
     ].
 
@@ -425,8 +482,8 @@ get_piece_peers_test_() ->
 
 get_downloading_piece_test_() ->
     Piece1 = #downloading_piece{piece_id = 0, status = false},
-    Piece2 = #downloading_piece{piece_id = 1, ip = {127,0,0,7}, port = 9874, status = downloading},
-    Piece3 = #downloading_piece{piece_id = 2, ip = {127,0,0,2}, port = 9614, status = downloading},
+    Piece2 = #downloading_piece{piece_id = 1, ip_port = {{127,0,0,7}, 9874}, status = downloading},
+    Piece3 = #downloading_piece{piece_id = 2, ip_port = {{127,0,0,2}, 9614}, status = downloading},
     DownloadingPieces = [Piece1, Piece2, Piece3],
     State = #state{downloading_pieces = DownloadingPieces},
     [

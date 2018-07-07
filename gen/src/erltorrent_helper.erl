@@ -119,7 +119,7 @@ get_packet(Socket) ->
 concat_file(TorrentName) ->
     {ok, Chunks} = file:list_dir(filename:join(["temp", TorrentName])),
     WriteChunkFun = fun(Chunk) ->
-        write_chunk(TorrentName, Chunk)
+        write_piece(TorrentName, Chunk)
     end,
     lists:map(WriteChunkFun, Chunks),
     ok.
@@ -128,10 +128,10 @@ concat_file(TorrentName) ->
 %%
 %%
 %%
-write_chunk(TorrentName, Chunk) ->
+write_piece(TorrentName, Chunk) ->
     {ok, Pieces} = file:list_dir(filename:join(["temp", TorrentName, Chunk])),
     WritePieceFun = fun(Piece) ->
-        write_piece(TorrentName, Chunk, Piece)
+        write_little_piece(TorrentName, Chunk, Piece)
     end,
     lists:map(WritePieceFun, Pieces),
     ok.
@@ -140,7 +140,7 @@ write_chunk(TorrentName, Chunk) ->
 %%
 %%
 %%
-write_piece(TorrentName, Chunk, Piece) ->
+write_little_piece(TorrentName, Chunk, Piece) ->
     {ok, Content} = file:read_file(filename:join(["temp", TorrentName, Chunk, Piece])),
     file:write_file(filename:join(["downloads", TorrentName]), Content, [append]),
     ok.
