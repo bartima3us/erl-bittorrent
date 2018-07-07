@@ -146,7 +146,7 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
         fun (Peer) ->
             erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())
         end,
-        [OnePeer]
+        PeersIP
     ),
     % Fill empty peaces peers
     NewPiecesPeers = lists:foldl(
@@ -161,7 +161,11 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
 %%
 %%
 handle_call({peace_peers, Id}, _From, State = #state{pieces_peers = PiecesPeers}) ->
-    {reply, dict:fetch(Id, PiecesPeers), State};
+    Result = case dict:is_key(Id, PiecesPeers) of
+        true  -> dict:fetch(Id, PiecesPeers);
+        false -> {error, piece_id_not_exist}
+    end,
+    {reply, Result, State};
 
 %%
 %%
@@ -195,10 +199,15 @@ handle_cast(_Msg, State) ->
 handle_info({bitfield, ParsedBitfield, Ip}, State = #state{pieces_peers = PiecesPeers}) ->
     NewPiecesPeers = dict:map(
         fun (Id, Peers) ->
+            % Check if this IP has an iterating piece
             case proplists:get_value(Id, ParsedBitfield) of
                 Val when Val =:= true ->
-                    [Ip|Peers];
-                _    ->
+                    % If there are not this IP in list yet, add it
+                    case lists:member(Ip, Peers) of
+                        false -> [Ip|Peers];
+                        true  -> Peers
+                    end;
+                _ ->
                     Peers
             end
         end,
@@ -206,9 +215,14 @@ handle_info({bitfield, ParsedBitfield, Ip}, State = #state{pieces_peers = Pieces
     ),
     {noreply, State#state{pieces_peers = NewPiecesPeers}};
 
-handle_info({have, PieceId, Ip}, State) ->
-
-    {noreply, State};
+handle_info({have, PieceId, Ip}, State = #state{pieces_peers = PiecesPeers}) ->
+    Peers = dict:fetch(PieceId, PiecesPeers),
+    NewPeers = case lists:member(Ip, Peers) of
+        false -> [Ip|Peers];
+        true  -> Peers
+    end,
+    NewPiecesPeers = dict:store(PieceId, NewPeers, PiecesPeers),
+    {noreply, State#state{pieces_peers = NewPiecesPeers}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -265,3 +279,59 @@ get_peers(PeersList, Result) ->
     get_peers(Rest, [{{Byte1, Byte2, Byte3, Byte4}, Port} | Result]).
 
 
+
+%%%===================================================================
+%%% EUnit tests
+%%%===================================================================
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+add_new_peer_to_pieces_peers_test_() ->
+    Ip = {127,0,0,1},
+    ParsedBitfield = [{0, true}, {1, false}, {2, true}, {3, true}],
+    PiecesPeers1 = dict:store(0, [], dict:new()),
+    PiecesPeers2 = dict:store(1, [{127,0,0,2}], PiecesPeers1),
+    PiecesPeers3 = dict:store(2, [{127,0,0,3}, {127,0,0,2}], PiecesPeers2),
+    PiecesPeers4 = dict:store(3, [{127,0,0,1}], PiecesPeers3),
+    PiecesPeers5 = dict:store(0, [Ip], PiecesPeers4),
+    PiecesPeers6 = dict:store(2, [Ip, {127,0,0,3}, {127,0,0,2}], PiecesPeers5),
+    PiecesPeers7 = dict:store(3, [Ip], PiecesPeers6),
+    State = #state{pieces_peers = PiecesPeers4},
+    [
+        ?_assertEqual(
+            {noreply, #state{pieces_peers = PiecesPeers7}},
+            handle_info({bitfield, ParsedBitfield, Ip}, State)
+        ),
+        ?_assertEqual(
+            {noreply, #state{pieces_peers = PiecesPeers4}},
+            handle_info({have, 3, Ip}, State)
+        ),
+        ?_assertEqual(
+            {noreply, #state{pieces_peers = PiecesPeers5}},
+            handle_info({have, 0, Ip}, State)
+        )
+    ].
+
+
+get_piece_peers_test_() ->
+    PiecesPeers1 = dict:store(0, [], dict:new()),
+    PiecesPeers2 = dict:store(1, [{127,0,0,3}, {127,0,0,2}], PiecesPeers1),
+    State = #state{pieces_peers = PiecesPeers2},
+    [
+        ?_assertEqual(
+            {reply, [], State},
+            handle_call({peace_peers, 0}, from, State)
+        ),
+        ?_assertEqual(
+            {reply, [{127,0,0,3}, {127,0,0,2}], State},
+            handle_call({peace_peers, 1}, from, State)
+        ),
+        ?_assertEqual(
+            {reply, {error, piece_id_not_exist}, State},
+            handle_call({peace_peers, 2}, from, State)
+        )
+    ].
+
+-endif.

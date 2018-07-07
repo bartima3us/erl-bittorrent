@@ -227,7 +227,7 @@ identify(FullData = <<0, 0, 0, 5, 4, Data/bytes>>, Acc) ->
             {ok, lists:reverse(Acc), FullData};
         Data ->
             <<Payload:PayloadLength/bytes, Rest/bytes>> = Data,
-            identify(Rest, [{have, Payload} | Acc])
+            identify(Rest, [{have, erltorrent_helper:bin_piece_id_to_int(Payload)} | Acc])
     end;
 
 %
@@ -529,7 +529,7 @@ parse_test_() ->
             {ok, [{piece, PieceRecord}], undefined}, identify(Piece1)
         ),
         ?_assertEqual(
-            {ok, [{have, HavePayload1}], undefined}, identify(Have1)
+            {ok, [{have, 3}], undefined}, identify(Have1)
         ),
         ?_assertEqual(
             {ok, [{bitfield, BitFieldRecord}], undefined}, identify(BitField)
@@ -542,9 +542,9 @@ parse_test_() ->
                     {bitfield, BitFieldRecord},
                     {unchoke, true},
                     {piece, PieceRecord},
-                    {have, HavePayload1},
+                    {have, 3},
                     {piece, PieceRecord},
-                    {have, HavePayload1}
+                    {have, 3}
                  ]
             },
             parse(Pid, Data1)
@@ -552,7 +552,7 @@ parse_test_() ->
         ?_assertEqual(
             {ok, [
                     {piece, PieceRecord},
-                    {have, HavePayload1}
+                    {have, 3}
                  ]
             },
             parse(Pid, Data2)
