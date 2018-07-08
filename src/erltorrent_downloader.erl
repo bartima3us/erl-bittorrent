@@ -142,6 +142,7 @@ handle_cast(request_piece, State) ->
             ok = erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength),
             ok = erltorrent_helper:get_packet(Socket);
         false ->
+            % @todo need to send end game message
             exit(self(), completed)
     end,
     {noreply, State};
