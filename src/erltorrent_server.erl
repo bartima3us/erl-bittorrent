@@ -17,7 +17,7 @@
 %% API
 -export([
     start_link/0,
-    download/0,
+    download/1,
     piece_peers/1,
     downloading_piece/1,
     is_end/0
@@ -45,7 +45,7 @@
 }).
 
 -record(state, {
-    torrent_name                     :: string(),
+    torrent_name                     :: string(), % @todo rename to file_name
     pieces_peers       = dict:new(),
     downloading_pieces = []          :: [#downloading_piece{}],
     pieces_amount                    :: integer(),
@@ -58,7 +58,7 @@
 
 % make start
 % application:start(erltorrent).
-% erltorrent_server:download().
+% erltorrent_server:download("[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent").
 % erltorrent_server:piece_peers(4).
 % erltorrent_server:downloading_piece(0).
 
@@ -71,8 +71,11 @@
 %% @doc
 %% Start download
 %%
-download() ->
-    gen_server:call(?SERVER, download).
+download(TorrentName) when is_binary(TorrentName) ->
+    download(binary_to_list(TorrentName));
+
+download(TorrentName) when is_list(TorrentName) ->
+    gen_server:call(?SERVER, {download, TorrentName}).
 
 
 %% @doc
@@ -141,9 +144,9 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(download, _From, State = #state{pieces_peers = PiecesPeers}) ->
+handle_call({download, TorrentName}, _From, State = #state{pieces_peers = PiecesPeers}) ->
     % @todo need to scrap data from tracker and update state constantly
-    File = filename:join(["torrents", "A.Bad.Moms.Christmas.2017.BDRip.x264.AAC.LT.EN-Morpheus.mkv.torrent"]),
+    File = filename:join(["torrents", TorrentName]),
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
@@ -161,7 +164,7 @@ handle_call(download, _From, State = #state{pieces_peers = PiecesPeers}) ->
 %%    <<FirstHash:20/binary, _Rest/binary>> = Pieces,
 %%    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
-    HashBinString = erltorrent_sha1:binstring(BencodedInfo), % @todo changed to crypto:hash(sha, BencodedInfo)
+    HashBinString = crypto:hash(sha, BencodedInfo),
     Hash = erltorrent_helper:urlencode(HashBinString),
     {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
     PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),

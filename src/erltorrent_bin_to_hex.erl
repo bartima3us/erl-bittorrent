@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @author sarunas
+%%% @author bartimaeus
 %%% @copyright (C) 2017, <COMPANY>
 %%% @doc
 %%%
@@ -9,7 +9,7 @@
 
 %% https://stackoverflow.com/questions/3768197/erlang-ioformatting-a-binary-to-hex
 -module(erltorrent_bin_to_hex).
--author("sarunas").
+-author("bartimaeus").
 
 -compile([native, {hipe, [o3]}]).
 

@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @author sarunas
+%%% @author bartimaeus
 %%% @copyright (C) 2017, <COMPANY>
 %%% @doc
 %%%

@@ -24,12 +24,13 @@ start_link() ->
 
 init([]) ->
     Server = #{
-        id => server,
-        start => {erltorrent_server, start_link, []},
-        restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [erltorrent_server]
+        id          => server,
+        start       => {erltorrent_server, start_link, []},
+        restart     => permanent,
+        shutdown    => 5000,
+        type        => worker,
+        modules     => [erltorrent_server]
     },
     {ok, {{one_for_one, 5, 10}, [Server]}}.
+
 
