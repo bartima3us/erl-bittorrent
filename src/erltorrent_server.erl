@@ -349,7 +349,7 @@ handle_info(_Info, State) ->
 
 %% @doc
 %% Assign free peers to download pieces
-%%
+%% @todo change all arguments to one: State
 assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName) ->
     assign_downloading_pieces(DownloadingPieces, [], [], PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName).
 
