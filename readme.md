@@ -22,6 +22,6 @@ $ make tests
 Put .torrent file into 'torrents' directory. Then:
 
 ```
-make start
+$ make start
 erltorrent_server:download("TorrentName.torrent").
 ```
