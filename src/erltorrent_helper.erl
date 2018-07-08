@@ -150,7 +150,7 @@ write_piece(TorrentName, Piece) ->
 
 %% @doc
 %% Concat parts
-%% @todo rename little piece to part
+%% @todo rename little piece and part to block
 write_little_piece(TorrentName, Piece, LittlePiece) ->
     {ok, Content} = file:read_file(filename:join(["temp", TorrentName, Piece, LittlePiece])),
     file:write_file(filename:join(["downloads", TorrentName]), Content, [append]),
