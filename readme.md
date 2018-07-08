@@ -1,4 +1,27 @@
-Erlang BitTorrent protocol implementation
+Erlang BitTorrent client
 ============
 
-Very early stage at the moment...
+Only downloading at the moment. There is no any possibility to share downloaded file (real pirate's client).
+
+Tested only on Lithuanian tracker 'Linkomanija'.
+
+Tested on Erlang/OTP 18, Erlang/OTP 19, Erlang/OTP 20.
+
+## Compile and start
+```
+$ make start
+```
+
+## EUnit tests
+```
+$ make tests
+```
+
+## Examples
+
+Put .torrent file into 'torrents' directory. Then:
+
+```
+make start
+erltorrent_server:download("TorrentName.torrent").
+```
