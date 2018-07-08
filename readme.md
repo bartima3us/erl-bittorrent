@@ -1,7 +1,7 @@
 Erlang BitTorrent client
 ============
 
-Only downloading at the moment. There is no any possibility to share downloaded file (real pirate's client).
+Only downloading at the moment. There is no any possibility to share downloaded file (real pirate's client). There is no possibility to download multiple files torrent at the moment.
 
 Tested only on Lithuanian tracker 'Linkomanija'.
 
