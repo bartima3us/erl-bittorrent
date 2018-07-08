@@ -119,9 +119,9 @@ get_packet(Socket) ->
     inet:setopts(Socket, [{active, once}]).
 
 
-%%
-%%
-%%
+%% @doc
+%% Concat all parts and pieces into file
+%% @todo need to make smarter algorithm without doubling a file
 concat_file(TorrentName) ->
     {ok, Pieces} = file:list_dir(filename:join(["temp", TorrentName])),
     WritePieceFun = fun(Piece) ->

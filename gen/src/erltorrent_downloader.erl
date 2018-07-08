@@ -243,7 +243,10 @@ handle_info(is_alive, State = #state{last_action = LastAction}) ->
     erlang:send_after(15000, self(), is_alive),
     CurrentTime = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
     case CurrentTime - LastAction >= 15 of
-        % @todo pagalvoti, ar reikia atskirai handlinti serveryje timeouted.
+        % @todo need to think if it's need to handle timeouted in server
+        % @todo need to make smarter algorithm. If all peers internet is very slow, this process will crash without downloading any part.
+        % @todo Also if internet from current peer is slow but not slow enough to exceed last_action limit, piece will be downloading too slow.
+        % @todo An idea: store in Mnesia peers speed and check in DB for faster peers and if peer is too slow, kill that process and make a new one with another peer.
         true  -> exit(self(), timeouted);
         false -> ok
     end,
