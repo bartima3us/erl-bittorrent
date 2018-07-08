@@ -66,12 +66,12 @@ urlencode(String) ->
         case lists:member(Symbol, AllowedSymbols) of
             true ->
                 Symbol;
-                _ ->
+            _ ->
                 HexList = httpd_util:integer_to_hexlist(Symbol),
-            case string:len(HexList) of
-                1 -> "%0" ++ string:to_lower(HexList);
-                _ -> "%" ++ string:to_lower(HexList)
-            end
+                case string:len(HexList) of
+                    1 -> "%0" ++ string:to_lower(HexList);
+                    _ -> "%" ++ string:to_lower(HexList)
+                end
         end
     end,
     lists:map(Parse, Value).
@@ -175,11 +175,11 @@ sort_with_split(Files) ->
     List3 = lists:sort(List2),
     lists:map(fun (File) -> integer_to_list(File) ++ ".part" end, List3).
 
+
+
 %%%===================================================================
 %%% Debug functions
 %%%===================================================================
-
-
 
 %%
 %%

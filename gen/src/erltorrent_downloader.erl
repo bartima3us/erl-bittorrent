@@ -43,7 +43,7 @@
     give_up_limit   = 3         :: integer(), % How much tries to get unchoke before giveup
     peer_id,
     hash,
-    last_action
+    last_action                 :: integer() % Gregorian seconds when last packet was received
 }).
 
 % @todo išhardkodinti, nes visas failas gali būti mažesnis už šitą skaičių
@@ -126,6 +126,8 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+%% @todo move to handle_info
+%%
 handle_cast(request_piece, State) ->
     #state{
         socket       = Socket,
@@ -158,6 +160,8 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+%% Start downloading from peer: open socket, make a handshake, start is alive checking timer.
+%%
 handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerId, hash = Hash}) ->
     {ok, Socket} = do_connect(PeerIp, Port),
     {ok, ParserPid} = erltorrent_packet:start_link(),
@@ -166,7 +170,9 @@ handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerI
     erlang:send_after(15000, self(), is_alive),
     {noreply, State#state{socket = Socket, parser_pid = ParserPid}};
 
-
+%% @doc
+%% Handle incoming packets.
+%%
 handle_info({tcp, _Port, Packet}, State) ->
     #state{
         torrent_id  = TorrentId,
@@ -201,8 +207,6 @@ handle_info({tcp, _Port, Packet}, State) ->
         {false, unchoke} -> request_piece();
         _                -> ok
     end,
-%%    lager:info("xxxxxx Data=~p", [Data]),
-%%    lager:info("xxxxxx NewPeerState=~p", [NewPeerState]),
     % We need to loop because we can receive more than 1 piece at the same time
     WriteFun = fun
         ({piece, Piece = #piece_data{payload = Payload, piece_index = PieceId, block_offset = BlockOffset}}) ->
@@ -232,6 +236,9 @@ handle_info({tcp, _Port, Packet}, State) ->
     end,
     {noreply, State#state{count = NewCount, peer_state = NewPeerState, last_action = calendar:datetime_to_gregorian_seconds(calendar:local_time())}};
 
+%% @doc
+%% Check is peer still alive every 15 seconds. If not - kill the process.
+%%
 handle_info(is_alive, State = #state{last_action = LastAction}) ->
     erlang:send_after(15000, self(), is_alive),
     CurrentTime = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
@@ -282,10 +289,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Connect to peer
 %%
 do_connect(PeerIp, Port) ->
-%%    lager:info("xxxxxxxx Trying to connect ~p:~p", [PeerIp, Port]),
-    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 10000),
-%%    lager:info("xxxxxxxx Connection successful. Socket=~p", [Socket]),
-    {ok, Socket}.
+    {ok, _Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 10000).
 
 
 %% @doc

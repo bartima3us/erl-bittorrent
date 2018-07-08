@@ -128,7 +128,6 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
     File = filename:join(["torrents", "[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent"]),
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
-
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
     FileName = dict:fetch(<<"name">>, Info),
     Pieces = dict:fetch(<<"pieces">>, Info), % @todo verifikuoti kiekvieno piece parsiuntimą
@@ -157,7 +156,7 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
     end,
     lager:info("All peers = ~p", [PeersIP]),
 
-    [OnePeer|_] = PeersIP,
+%%    [OnePeer|_] = PeersIP,
     lists:map(
         fun (Peer) ->
             erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())
@@ -231,6 +230,8 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+%% Handle async bitfield message from peer and assign new peers if needed
+%%
 handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces}) ->
     NewPiecesPeers = dict:map(
         fun (Id, Peers) ->
@@ -251,7 +252,8 @@ handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = 
     self() ! assign_downloading_pieces,
     {noreply, State#state{pieces_peers = NewPiecesPeers}};
 
-%%
+%% @doc
+%% Handle async have message from peer and assign new peers if needed
 %%
 handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers}) ->
     Peers = dict:fetch(PieceId, PiecesPeers),
@@ -265,18 +267,19 @@ handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers
 
 %% @doc
 %% Assign pieces for peers to download
-%% @todo reikia handlinti {error,emfile} bandant atidaryt socketą. Ši klaida reiškia, jog OS atsisako atidaryti daugiau socketų
 %% @todo need test
 handle_info(assign_downloading_pieces, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash, piece_length = PieceLength, last_piece_length = LastPieceLength, last_piece_id = LastPieceId}) ->
     NewDownloadingPieces = assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId),
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
 %% @doc
-%% Remove process from downloading pieces if it crashes and move that peer into end of queue.
+%% Remove process from downloading pieces if it crashes or completes. Move that peer into end of queue if it crashes.
 %%
 handle_info({'DOWN', MonitorRef, process, _Pid, completed}, State = #state{downloading_pieces = DownloadingPieces}) ->
     {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
-    #downloading_piece{piece_id = PieceId} = OldDownloadingPiece,
+    #downloading_piece{
+        piece_id = PieceId
+    } = OldDownloadingPiece,
     NewDownloadingPieces = lists:keyreplace(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces, #downloading_piece{piece_id = PieceId, status = completed}),
     self() ! assign_downloading_pieces,
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
@@ -306,7 +309,7 @@ handle_info(_Info, State) ->
 
 
 %% @doc
-%%
+%% Assign free peers to download pieces
 %%
 assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId) ->
     assign_downloading_pieces(DownloadingPieces, [], [], PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId).
@@ -316,12 +319,14 @@ assign_downloading_pieces([], Acc, _AlreadyAssigned, _PiecesPeers, _DownloadingP
 
 assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId) ->
     Peers = dict:fetch(Id, PiecesPeers),
+    % Get free peers. Free means that peer isn't assigned in this iteration yet and isn't assigned in the past.
     AllowedPeers = lists:filter(
         fun (Peer) ->
             AlreadyDownloading = case lists:keysearch(Peer, #downloading_piece.ip_port, DownloadingPieces) of
                 false -> true;
                 _     -> false
             end,
+            % @todo also need to count current opened sockets in case of many peers and not to open new socket if limit is exceeded
             not(lists:member(Peer, AlreadyAssigned)) and AlreadyDownloading
         end,
         Peers
@@ -357,8 +362,8 @@ assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, _State) ->
-    lager:info("xxxxxxxx Server terminate=~p", [_Reason]),
+terminate(Reason, _State) ->
+    lager:info("Server terminated! Reason: ~p", [Reason]),
     ok.
 
 %%--------------------------------------------------------------------
@@ -377,8 +382,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 
-%%
-%%
+%% @doc
+%% Make HTTP connect to tracker to get information
 %%
 connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
     inets:start(),
@@ -388,8 +393,8 @@ connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
     erltorrent_bencoding:decode(Body).
 
 
-%%
-%%
+%% @doc
+%% Parse Peers list
 %%
 get_peers(<<>>, Result) ->
     lists:reverse(Result);

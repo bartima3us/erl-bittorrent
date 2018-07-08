@@ -268,7 +268,6 @@ identify(FullData = <<Length:4/bytes, 7, PieceIndex:4/bytes, BlockOffset:4/bytes
             {ok, lists:reverse(Acc), FullData};
         Data ->
             <<Payload:PayloadLength/bytes, Rest/bytes>> = Data,
-%%            lager:info("xxxxxxx RestSize=~p Rest=~p", [byte_size(Rest), Rest]),
             Piece = #piece_data{
                 payload      = Payload,
                 length       = Length,
