@@ -19,11 +19,10 @@
 ]).
 
 
-%%
-%%
+%% @doc
+%% Send `handshake` message
 %%
 handshake(Socket, PeerId, Hash) ->
-%%    io:format("Trying to handshake. Socket=~p~n", [Hash]),
     Request = [
         19,
         "BitTorrent protocol",
@@ -31,40 +30,33 @@ handshake(Socket, PeerId, Hash) ->
         Hash,
         PeerId
     ],
-    gen_tcp:send(Socket, list_to_binary(Request)),
-%%    io:format("Handshake successful. Socket=~p~n", [Socket]),
-    ok.
+    ok = gen_tcp:send(Socket, list_to_binary(Request)).
 
 
-%%
-%%
+%% @doc
+%% Send `interested` message
 %%
 interested(Socket) ->
-    % Reikia handlinti tiek po unchoke bitfield, tiek po bitfield - unchoke, nes jų tvarka neprognozuojama.
-    gen_tcp:send(Socket, <<00, 00, 00, 01, 02>>),
-%%    lager:info("Interested! Socket=~p", [Socket]),
-    ok.
+    ok = gen_tcp:send(Socket, <<00, 00, 00, 01, 02>>).
 
 
-%%
-%%
+%% @doc
+%% Send `keep alive` message
 %%
 keep_alive(Socket) ->
-    io:format("Keep-alive! ~p~n", [Socket]),
-%%    gen_tcp:send(Socket, <<00, 00, 00, 00>>),
-    ok.
+    ok = gen_tcp:send(Socket, <<00, 00, 00, 00>>).
 
 
-%%
-%%
+%% @doc
+%% Send `request piece` message
 %%
 request_piece(Socket, PieceId, PieceBegin, PieceLength) when is_integer(PieceId) ->
     PieceIdBin = erltorrent_helper:int_piece_id_to_bin(PieceId),
     request_piece(Socket, PieceIdBin, PieceBegin, PieceLength);
 
 request_piece(Socket, PieceId, PieceBegin, PieceLength) when is_binary(PieceId) ->
-    PieceLengthBin = <<PieceLength:32>>,
-    gen_tcp:send(
+    PieceLengthBin = <<PieceLength:32>>, % @todo move to generic helper
+    ok = gen_tcp:send(
         Socket,
         <<
             00, 00, 00, 16#0d,      % Message length
@@ -73,7 +65,6 @@ request_piece(Socket, PieceId, PieceBegin, PieceLength) when is_binary(PieceId) 
             PieceBegin/binary,      % Begin offset of piece
             PieceLengthBin/binary   % Piece length
         >>
-    ),
-    ok.
+    ).
 
 

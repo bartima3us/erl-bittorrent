@@ -18,7 +18,6 @@
 -export([
     start_link/0,
     download/0,
-    download/1,
     piece_peers/1,
     downloading_piece/1,
     is_end/0
@@ -57,31 +56,45 @@
     last_piece_id                    :: integer()
 }).
 
+% make start
+% application:start(erltorrent).
+% erltorrent_server:download().
+% erltorrent_server:piece_peers(4).
+% erltorrent_server:downloading_piece(0).
+
+
+
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-
-%% make start
-%% application:start(erltorrent).
-%% erltorrent_server:download().
-%% erltorrent_server:piece_peers(4).
-%% erltorrent_server:downloading_piece(0).
+%% @doc
+%% Start download
 %%
 download() ->
-    gen_server:call(?SERVER, {download, inverse}).
+    gen_server:call(?SERVER, download).
 
-download(r) ->
-    gen_server:call(?SERVER, {download, reverse}).
 
+%% @doc
+%% Get piece peers
+%%
 piece_peers(Id) ->
-    gen_server:call(?SERVER, {peace_peers, Id}).
+    gen_server:call(?SERVER, {piece_peers, Id}).
 
+
+%% @doc
+%% Get downloading piece data
+%%
 downloading_piece(Id) ->
     gen_server:call(?SERVER, {downloading_piece, Id}).
 
+
+%% @doc
+%% Check is all pieces are downloaded
+%%
 is_end() ->
     gen_server:call(?SERVER, is_end).
+
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -93,10 +106,11 @@ is_end() ->
 start_link() ->
     gen_server:start({local, ?SERVER}, ?MODULE, [], []).
 
+
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
-
 
 %%--------------------------------------------------------------------
 %% @private
@@ -112,6 +126,7 @@ start_link() ->
 init([]) ->
     {ok, #state{}}.
 
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -126,15 +141,14 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-
-handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers}) ->
+handle_call(download, _From, State = #state{pieces_peers = PiecesPeers}) ->
     % @todo need to scrap data from tracker and update state constantly
     File = filename:join(["torrents", "A.Bad.Moms.Christmas.2017.BDRip.x264.AAC.LT.EN-Morpheus.mkv.torrent"]),
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
     FileName = dict:fetch(<<"name">>, Info),
-    Pieces = dict:fetch(<<"pieces">>, Info), % @todo verifikuoti kiekvieno piece parsiuntimą
+    Pieces = dict:fetch(<<"pieces">>, Info), % @todo verify pieces with hash
     FullSize = dict:fetch(<<"length">>, Info),
     PieceSize = dict:fetch(<<"piece length">>, Info),
     TrackerLink = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
@@ -143,24 +157,14 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
     lager:info("Piece size = ~p bytes", [PieceSize]),
     lager:info("Full file size = ~p", [FullSize]),
     lager:info("Pieces amount = ~p", [PiecesAmount]),
-
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
-
 %%    <<FirstHash:20/binary, _Rest/binary>> = Pieces,
 %%    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
-
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
-    HashBinString = erltorrent_sha1:binstring(BencodedInfo), % @todo pakeisti į crypto:hash(sha, BencodedInfo)
+    HashBinString = erltorrent_sha1:binstring(BencodedInfo), % @todo changed to crypto:hash(sha, BencodedInfo)
     Hash = erltorrent_helper:urlencode(HashBinString),
-
     {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
-    PeersIP = case Type of % @todo vėliau pašalinti
-        inverse -> get_peers(dict:fetch(<<"peers">>, Result), []);
-        reverse -> lists:reverse(get_peers(dict:fetch(<<"peers">>, Result), []))
-    end,
-    lager:info("All peers = ~p", [PeersIP]),
-
-%%    [OnePeer|_] = PeersIP,
+    PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
     lists:map(
         fun (Peer) ->
             erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())
@@ -173,18 +177,31 @@ handle_call({download, Type}, _From, State = #state{pieces_peers = PiecesPeers})
     IdsList = lists:seq(0, LastPieceId),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
     NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
-    {reply, ok, State#state{torrent_name = FileName, pieces_amount = PiecesAmount, pieces_peers = NewPiecesPeers, downloading_pieces = NewDownloadingPieces, peer_id = PeerId, hash = HashBinString, piece_length = PieceSize, last_piece_length = LastPieceLength, last_piece_id = LastPieceId}};
+    NewState = State#state{
+        torrent_name = FileName,
+        pieces_amount = PiecesAmount,
+        pieces_peers = NewPiecesPeers,
+        downloading_pieces = NewDownloadingPieces,
+        peer_id = PeerId,
+        hash = HashBinString,
+        piece_length = PieceSize,
+        last_piece_length = LastPieceLength,
+        last_piece_id = LastPieceId
+    },
+    {reply, ok, NewState};
 
+%% @doc
+%% Handle piece peers call
 %%
-%%
-handle_call({peace_peers, Id}, _From, State = #state{pieces_peers = PiecesPeers}) ->
+handle_call({piece_peers, Id}, _From, State = #state{pieces_peers = PiecesPeers}) ->
     Result = case dict:is_key(Id, PiecesPeers) of
         true  -> dict:fetch(Id, PiecesPeers);
         false -> {error, piece_id_not_exist}
     end,
     {reply, Result, State};
 
-%%
+%% @doc
+%% Handle downloading piece call
 %%
 handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
     Result = case lists:keysearch(Id, #downloading_piece.piece_id, DownloadingPieces) of
@@ -193,12 +210,14 @@ handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = 
     end,
     {reply, Result, State};
 
-%%
+%% @doc
+%% Handle is end checking call
 %%
 handle_call(is_end, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
     {reply, is_end(DownloadingPieces), State};
 
-%%
+%% @doc
+%% Handle unknown calls
 %%
 handle_call(_Request, _From, State) ->
     Reply = ok,
@@ -285,7 +304,7 @@ handle_info(assign_downloading_pieces, State = #state{torrent_name = TorrentName
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
 %% @doc
-%% Remove process from downloading pieces if it crashes. Move that peer into end of queue.
+%% Remove process from downloading pieces if it completes downloading.
 %%
 handle_info({'DOWN', MonitorRef, process, _Pid, completed}, State = #state{downloading_pieces = DownloadingPieces}) ->
     {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
@@ -297,7 +316,7 @@ handle_info({'DOWN', MonitorRef, process, _Pid, completed}, State = #state{downl
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
 %% @doc
-%% Remove process from downloading pieces if it completes downloading.
+%% Remove process from downloading pieces if it crashes. Move that peer into end of queue.
 %%
 handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers}) ->
     % Remove peer from downloading list
@@ -336,8 +355,8 @@ assign_downloading_pieces([], Acc, _AlreadyAssigned, _PiecesPeers, _DownloadingP
 
 assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName) ->
     Peers = dict:fetch(Id, PiecesPeers),
-    % Get free peers. Free means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
-    AllowedPeers = lists:filter(
+    % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
+    AvailablePeers = lists:filter(
         fun (Peer) ->
             AlreadyDownloading = case lists:keysearch(Peer, #downloading_piece.ip_port, DownloadingPieces) of
                 false -> false;
@@ -348,7 +367,8 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
         end,
         Peers
     ),
-    DownloadingPiece = case AllowedPeers of
+    % Assign peers to pieces if there are available peers
+    DownloadingPiece = case AvailablePeers of
         [{Ip, Port}|_] ->
             CurrentPieceLength = case Id =:= LastPieceId of
                  true  -> LastPieceLength;
@@ -364,6 +384,7 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
     end,
     assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName);
 
+% Skip pieces with other status than `false`
 assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName) ->
     assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName).
 
@@ -411,8 +432,11 @@ connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
 
 
 %% @doc
-%% Parse Peers list
+%% Parse peers list
 %%
+get_peers(PeersList) ->
+    get_peers(PeersList, []).
+
 get_peers(<<>>, Result) ->
     lists:reverse(Result);
 
@@ -538,15 +562,15 @@ get_piece_peers_test_() ->
     [
         ?_assertEqual(
             {reply, [], State},
-            handle_call({peace_peers, 0}, from, State)
+            handle_call({piece_peers, 0}, from, State)
         ),
         ?_assertEqual(
             {reply, [{127,0,0,3}, {127,0,0,2}], State},
-            handle_call({peace_peers, 1}, from, State)
+            handle_call({piece_peers, 1}, from, State)
         ),
         ?_assertEqual(
             {reply, {error, piece_id_not_exist}, State},
-            handle_call({peace_peers, 2}, from, State)
+            handle_call({piece_peers, 2}, from, State)
         )
     ].
 
@@ -573,3 +597,5 @@ get_downloading_piece_test_() ->
     ].
 
 -endif.
+
+

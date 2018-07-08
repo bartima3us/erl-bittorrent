@@ -36,10 +36,10 @@
 }).
 
 
+
 %%%===================================================================
 %%% API
 %%%===================================================================
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -58,10 +58,11 @@ start_link() ->
 parse(Pid, Data) ->
     gen_server:call(Pid, {parse, Data}).
 
+
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
-
 
 %%--------------------------------------------------------------------
 %% @private
@@ -93,6 +94,8 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+%% Start packets parsing
+%%
 handle_call({parse, Data}, _From, State = #state{rest = Rest}) ->
     {FullData, MessageType, ExtraData} = case Rest of
         Rest when is_binary(Rest) ->
@@ -106,6 +109,9 @@ handle_call({parse, Data}, _From, State = #state{rest = Rest}) ->
     end,
     {reply, {ok, ParsedResult}, State#state{parsed_data = ParsedResult, rest = ParsedRest}};
 
+%% @doc
+%% Handle unknown calls
+%%
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -165,62 +171,54 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
+%% @doc
+%% Identify and parse packets
+%%
 identify(Data) ->
     identify(Data, []).
 
 identify(<<>>, Acc) ->
-%%    io:format("All packets parsed!~n"),
     {ok, lists:reverse(Acc), undefined};
 
 %
 % Handshake
 identify(<<19, _Label:19/bytes, _ReservedBytes:8/bytes, _Hash:20/bytes, _PeerId:20/bytes, Rest/bytes>>, Acc) ->
-%%    io:format("Got handshake!~n"),
     identify(Rest, [{handshake, true} | Acc]);
 
 %
 % Keep alive
 identify(<<0, 0, 0, 0, Rest/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got keep-alive!~n"),
     identify(Rest, [{keep_alive, true} | Acc]);
 
 %
 % Choke
 identify(<<0, 0, 0, 1, 0, Rest/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got choke!~n"),
     identify(Rest, [{choke, true} | Acc]);
 
 %
 % Uncoke
 identify(<<0, 0, 0, 1, 1, Rest/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got unchoke!~n"),
     identify(Rest, [{unchoke, true} | Acc]);
 
 %
 % Interested
 identify(<<0, 0, 0, 1, 2, Rest/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got interested!~n"),
     identify(Rest, [{interested, true} | Acc]);
 
 %
 % Not interested
 identify(<<0, 0, 0, 1, 3, Rest/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got not interested!~n"),
     identify(Rest, [{not_interested, true} | Acc]);
 
 %
 % Have (fixed length, always 0005)
 identify(FullData = <<0, 0, 0, 5, 4, Data/bytes>>, Acc) ->
-%%    io:format("------------------------~nGot have~n"),
     PayloadLength = 4, % Because we've already matched Idx=4
     case Data of
         Data when byte_size(Data) < PayloadLength ->
@@ -233,7 +231,6 @@ identify(FullData = <<0, 0, 0, 5, 4, Data/bytes>>, Acc) ->
 %
 % Bitfield
 identify(FullData = <<Length:4/bytes, 5, Data/bytes>>, Acc) ->
-%%    io:format("------------------------~nGot bitfield!~n"),
     <<FullLength:32>> = Length,     % Convert to integer (same as: <<FullLength:32/integer>> = Length)
     PayloadLength = FullLength - 1, % Because we've already matched Idx=5
     case Data of
@@ -252,15 +249,11 @@ identify(FullData = <<Length:4/bytes, 5, Data/bytes>>, Acc) ->
 %
 % Request (length = 13)
 identify(<<0, 0, 0, 13, 6, _PieceIndex:4/bytes, _BlockOffset:4/bytes, _BlockLength:4/bytes, Rest/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got request!~n"),
     identify(Rest, Acc);
 
 %
 % Piece (length = 16384 bytes (piece size) + 9 (piece: <len=0009+X><id=7><index><begin><block>))
 identify(FullData = <<Length:4/bytes, 7, PieceIndex:4/bytes, BlockOffset:4/bytes, Data/bytes>>, Acc) ->
-%%    io:format("------------------------~n"),
-%%    io:format("Got piece!~n"),
     <<FullLength:32>> = Length,      % Convert to integer
     PayloadLength = FullLength - 9,  % Because we've already matched Idx, PieceIndex and BlockOffset
     case Data of
@@ -278,14 +271,12 @@ identify(FullData = <<Length:4/bytes, 7, PieceIndex:4/bytes, BlockOffset:4/bytes
     end;
 
 identify(Data, Acc) ->
-    io:format("------------------------~n"),
-    io:format("Unidentified packet!~n"),
     {ok, lists:reverse(Acc), Data}.
 
 
 %% @doc
-%% Parse bitfield to bits ({PeaceId, true | false}).
-%% True or false depends if peer has a peace or not.
+%% Parse bitfield to bits ({PeaceId, true | false}). True or false depends if peer has a peace or not.
+%%
 parse_bitfield(Bitfield) when is_list(Bitfield) ->
     parse_bitfield(Bitfield, 0, []);
 
@@ -313,11 +304,11 @@ parse_bitfield([Byte|Bytes], Iteration, Acc) ->
     ],
     parse_bitfield(Bytes, Iteration + 8, [Result|Acc]).
 
+
+
 %%%===================================================================
 %%% EUnit tests
 %%%===================================================================
-
-
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

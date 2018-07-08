@@ -41,10 +41,11 @@
     server_pid      :: pid()
 }).
 
+
+
 %%%===================================================================
 %%% API
 %%%===================================================================
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -56,10 +57,11 @@
 start(Peer, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid) ->
     gen_server:start(?MODULE, [Peer, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid], []).
 
+
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
-
 
 %%--------------------------------------------------------------------
 %% @private
@@ -88,6 +90,7 @@ init([{PeerIp, Port}, PeerId, Hash, TorrentName, FullSize, PieceSize, ServerPid]
     self() ! start,
     {ok, State}.
 
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -106,6 +109,7 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -119,6 +123,7 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -129,20 +134,20 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-
+%% Connect to peer, make a handshake
+%%
 handle_info(start, State = #state{peer_id = PeerId, hash = Hash}) ->
     {ok, Socket} = do_connect(State),
     ok = erltorrent_message:handshake(Socket, PeerId, Hash),
     ok = erltorrent_helper:get_packet(Socket),
     {noreply, State#state{socket = Socket}};
 
+%% @doc
+%% Handle and parse packets from peer
+%%
 handle_info({tcp, _Port, Packet}, State) ->
     #state{
-        torrent_name = TorrentName,
-        full_size    = FullSize,
-        piece_size   = PieceSize,
         socket       = Socket,
-        bitfield     = Bitfield,
         peer_ip      = PeerIp,
         port         = Port,
         peer_id      = PeerId,
@@ -152,46 +157,39 @@ handle_info({tcp, _Port, Packet}, State) ->
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
-        true ->
-%%            lager:info("Received handshake from ~p:~p for file: ~p", [PeerIp, Port, TorrentName]),
-            erltorrent_message:handshake(Socket, PeerId, Hash);
-        _    ->
-            ok
+        true -> erltorrent_message:handshake(Socket, PeerId, Hash);
+        _    -> ok
     end,
     ok = case proplists:get_value(keep_alive, Data) of
-        true ->
-%%            lager:info("Received keep alive from ~p:~p for file: ~p", [PeerIp, Port, TorrentName]),
-            erltorrent_message:keep_alive(Socket);
-        _    ->
-            ok
+        true -> erltorrent_message:keep_alive(Socket);
+        _    -> ok
     end,
-    ok = case proplists:get_value(bitfield, Data) of
-        undefined ->
-            ok;
-        BitField = #bitfield_data{parsed = ParsedBitfield} ->
-%%            lager:info("Received bitfield: ~p from ~p:~p for file: ~p", [BitField, PeerIp, Port, TorrentName]),
-            ServerPid ! {bitfield, ParsedBitfield, PeerIp, Port},
-            ok
+    case proplists:get_value(bitfield, Data) of
+        undefined -> ok;
+        #bitfield_data{parsed = ParsedBitfield} -> ServerPid ! {bitfield, ParsedBitfield, PeerIp, Port}
     end,
-    ok = case proplists:get_value(have, Data) of
-        undefined ->
-            ok;
-        PeaceId  ->
-%%            lager:info("Received have: ~p from ~p:~p for file: ~p", [PeaceId, PeerIp, Port, TorrentName]),
-            ServerPid ! {have, PeaceId, PeerIp, Port},
-            ok
+    case proplists:get_value(have, Data) of
+        undefined -> ok;
+        PeaceId  -> ServerPid ! {have, PeaceId, PeerIp, Port}
     end,
     ok = erltorrent_helper:get_packet(Socket),
     {noreply, State};
 
+%% @doc
+%% Handle socket close
+%%
 handle_info({tcp_closed, Socket}, State = #state{socket = Socket}) ->
     lager:info("Socket closed! State=~p", [State]),
     exit(normal),
     {noreply, State};
 
+%% @doc
+%% Handle unknown messages
+%%
 handle_info(Info, State) ->
     lager:info("Got unknown message! Info=~p, State=~p", [Info, State]),
     {noreply, State}.
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -207,6 +205,7 @@ handle_info(Info, State) ->
 terminate(_Reason, _State) ->
     ok.
 
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -218,22 +217,20 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
-
-%%
-%%
+%% @doc
+%% Open a socket with peer
 %%
 do_connect(State) ->
     #state{
         peer_ip = PeerIp,
         port    = Port
     } = State,
-%%    io:format("Trying to connect ~p:~p~n", [PeerIp, Port]),
-    {ok, Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary]),
-%%    io:format("Connection successful. Socket=~p~n", [Socket]),
-    {ok, Socket}.
+    gen_tcp:connect(PeerIp, Port, [{active, false}, binary]).
 
 

@@ -41,8 +41,8 @@
     server_pid                  :: pid(),
     peer_state      = choke     :: choke | unchoke,
     give_up_limit   = 3         :: integer(), % How much tries to get unchoke before giveup
-    peer_id,
-    hash,
+    peer_id                     :: binary(),
+    hash                        :: binary(),
     last_action                 :: integer() % Gregorian seconds when last packet was received
 }).
 
@@ -176,20 +176,15 @@ handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerI
 handle_info({tcp, _Port, Packet}, State) ->
     #state{
         torrent_id  = TorrentId,
-        port        = Port,
         count       = Count,
         parser_pid  = ParserPid,
         socket      = Socket,
-        peer_ip     = PeerIp,
         peer_state  = PeerState
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
-        true ->
-%%            lager:info("xxxxxxxxxx Received handshake from ~p:~p for file: ~p", [PeerIp, Port, TorrentId]),
-            ok = erltorrent_message:interested(Socket);
-        _    ->
-            ok
+        true -> erltorrent_message:interested(Socket);
+        _    -> ok
     end,
     % Identify new my peer state
     % @todo implement unchoke waiting giveup
@@ -252,6 +247,9 @@ handle_info(is_alive, State = #state{last_action = LastAction}) ->
     end,
     {noreply, State};
 
+%% @doc
+%% Handle unknown messages.
+%%
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -320,7 +318,6 @@ request_piece() ->
 %%%===================================================================
 %%% EUnit tests
 %%%===================================================================
-
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
