@@ -170,7 +170,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     end,
     case proplists:get_value(have, Data) of
         undefined -> ok;
-        PeaceId  -> ServerPid ! {have, PeaceId, PeerIp, Port}
+        PieceId  -> ServerPid ! {have, PieceId, PeerIp, Port}
     end,
     ok = erltorrent_helper:get_packet(Socket),
     {noreply, State};

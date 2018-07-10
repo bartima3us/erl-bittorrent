@@ -275,7 +275,7 @@ identify(Data, Acc) ->
 
 
 %% @doc
-%% Parse bitfield to bits ({PeaceId, true | false}). True or false depends if peer has a peace or not.
+%% Parse bitfield to bits ({PieceId, true | false}). True or false depends if peer has a piece or not.
 %%
 parse_bitfield(Bitfield) when is_list(Bitfield) ->
     parse_bitfield(Bitfield, 0, []);

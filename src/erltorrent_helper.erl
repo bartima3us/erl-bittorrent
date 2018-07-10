@@ -19,8 +19,8 @@
     bin_piece_id_to_int/1,
     int_piece_id_to_bin/1,
     confirm_hash/1,
-    get_little_piece/2,
-    compare_little_piece/2,
+    get_block/2,
+    compare_block/2,
     get_meta_data/0,
     compare_last_piece/0,
     compare_files/2
@@ -140,19 +140,19 @@ concat_file(FileName) ->
 %% Concat pieces
 %%
 write_piece(FileName, Piece) ->
-    {ok, LittlePieces} = file:list_dir(filename:join(["temp", FileName, Piece])),
-    WriteLittlePieceFun = fun(LittlePiece) ->
-        write_little_piece(FileName, Piece, LittlePiece)
+    {ok, Blocks} = file:list_dir(filename:join(["temp", FileName, Piece])),
+    WriteBlockFun = fun(Block) ->
+        write_block(FileName, Piece, Block)
     end,
-    lists:map(WriteLittlePieceFun, sort_with_split(LittlePieces)),
+    lists:map(WriteBlockFun, sort_with_split(Blocks)),
     ok.
 
 
 %% @doc
-%% Concat parts
-%% @todo rename little piece and part to block
-write_little_piece(FileName, Piece, LittlePiece) ->
-    {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, LittlePiece])),
+%% Concat blocks
+%%
+write_block(FileName, Piece, Block) ->
+    {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, Block])),
     file:write_file(filename:join(["downloads", FileName]), Content, [append]),
     ok.
 
@@ -178,7 +178,7 @@ sort_with_split(Files) ->
         Files
     ),
     List3 = lists:sort(List2),
-    lists:map(fun (File) -> integer_to_list(File) ++ ".part" end, List3).
+    lists:map(fun (File) -> integer_to_list(File) ++ ".block" end, List3).
 
 
 
@@ -210,8 +210,8 @@ confirm_hash(Piece) ->
 %%
 %%
 %%
-get_little_piece(Piece, Offset) ->
-    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".part"]),
+get_block(Piece, Offset) ->
+    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".block"]),
     {ok, Bin} = file:read_file(File),
     file:write_file("test.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
     ok.
@@ -220,11 +220,11 @@ get_little_piece(Piece, Offset) ->
 %%
 %%
 %%
-compare_little_piece(Piece, Offset) ->
+compare_block(Piece, Offset) ->
     Exclude = trunc(list_to_integer(Piece) * 16384 * 64 + (list_to_integer(Offset) / 16384) * 16384),
     {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
     <<_:Exclude/binary, CuttedOriginal:16384/binary, Rest/binary>> = OriginalFileBin,
-    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".part"]),
+    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".block"]),
     {ok, Bin} = file:read_file(File),
     io:format("Rest byte size=~p", [byte_size(Rest)]),
     file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
@@ -252,7 +252,7 @@ compare_last_piece() ->
     Exclude = trunc(203 * 16384 * 64 + (573440 / 16384) * 16384),
     {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
     <<_:Exclude/binary, _CuttedOriginal:16384/binary, Rest/binary>> = OriginalFileBin,
-    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", "203", "589824" ++ ".part"]),
+    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", "203", "589824" ++ ".block"]),
     {ok, Bin} = file:read_file(File),
     io:format("Rest byte size=~p", [byte_size(Rest)]),
     file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),

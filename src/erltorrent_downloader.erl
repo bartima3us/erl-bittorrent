@@ -207,7 +207,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     WriteFun = fun
         ({piece, Piece = #piece_data{payload = Payload, piece_index = PieceId, block_offset = BlockOffset}}) ->
             <<PieceBegin:32>> = BlockOffset,
-            FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".part"]),
+            FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".block"]),
             filelib:ensure_dir(FileName),
             file:write_file(FileName, Payload),
             {true, Piece};

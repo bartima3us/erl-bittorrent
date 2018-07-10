@@ -176,7 +176,7 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     ),
     LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
     LastPieceId = PiecesAmount - 1,
-    % Fill empty peaces peers and downloading pieces
+    % Fill empty pieces peers and downloading pieces
     IdsList = lists:seq(0, LastPieceId),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
     NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
