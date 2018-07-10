@@ -127,10 +127,10 @@ get_packet(Socket) ->
 %% @doc
 %% Concat all parts and pieces into file
 %% @todo need to make smarter algorithm without doubling a file
-concat_file(TorrentName) ->
-    {ok, Pieces} = file:list_dir(filename:join(["temp", TorrentName])),
+concat_file(FileName) ->
+    {ok, Pieces} = file:list_dir(filename:join(["temp", FileName])),
     WritePieceFun = fun(Piece) ->
-        write_piece(TorrentName, Piece)
+        write_piece(FileName, Piece)
     end,
     lists:map(WritePieceFun, sort(Pieces)),
     ok.
@@ -139,10 +139,10 @@ concat_file(TorrentName) ->
 %% @doc
 %% Concat pieces
 %%
-write_piece(TorrentName, Piece) ->
-    {ok, LittlePieces} = file:list_dir(filename:join(["temp", TorrentName, Piece])),
+write_piece(FileName, Piece) ->
+    {ok, LittlePieces} = file:list_dir(filename:join(["temp", FileName, Piece])),
     WriteLittlePieceFun = fun(LittlePiece) ->
-        write_little_piece(TorrentName, Piece, LittlePiece)
+        write_little_piece(FileName, Piece, LittlePiece)
     end,
     lists:map(WriteLittlePieceFun, sort_with_split(LittlePieces)),
     ok.
@@ -151,9 +151,9 @@ write_piece(TorrentName, Piece) ->
 %% @doc
 %% Concat parts
 %% @todo rename little piece and part to block
-write_little_piece(TorrentName, Piece, LittlePiece) ->
-    {ok, Content} = file:read_file(filename:join(["temp", TorrentName, Piece, LittlePiece])),
-    file:write_file(filename:join(["downloads", TorrentName]), Content, [append]),
+write_little_piece(FileName, Piece, LittlePiece) ->
+    {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, LittlePiece])),
+    file:write_file(filename:join(["downloads", FileName]), Content, [append]),
     ok.
 
 

@@ -28,7 +28,7 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {
-    torrent_name    :: string(),
+    file_name       :: string(),
     full_size       :: integer(),
     piece_size      :: integer(),
     peer_ip         :: tuple(),
@@ -74,10 +74,10 @@ start(Peer, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{PeerIp, Port}, PeerId, Hash, TorrentName, FullSize, PieceSize, ServerPid]) ->
+init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid]) ->
     {ok, ParserPid} = erltorrent_packet:start_link(),
     State = #state{
-        torrent_name = TorrentName,
+        file_name    = FileName,
         full_size    = FullSize,
         piece_size   = PieceSize,
         peer_ip      = PeerIp,

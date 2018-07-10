@@ -45,7 +45,7 @@
 }).
 
 -record(state, {
-    torrent_name                     :: string(), % @todo rename to file_name
+    file_name                        :: string(),
     pieces_peers       = dict:new(),
     downloading_pieces = []          :: [#downloading_piece{}],
     pieces_amount                    :: integer(),
@@ -181,15 +181,15 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
     NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
     NewState = State#state{
-        torrent_name = FileName,
-        pieces_amount = PiecesAmount,
-        pieces_peers = NewPiecesPeers,
-        downloading_pieces = NewDownloadingPieces,
-        peer_id = PeerId,
-        hash = HashBinString,
-        piece_length = PieceSize,
-        last_piece_length = LastPieceLength,
-        last_piece_id = LastPieceId
+        file_name           = FileName,
+        pieces_amount       = PiecesAmount,
+        pieces_peers        = NewPiecesPeers,
+        downloading_pieces  = NewDownloadingPieces,
+        peer_id             = PeerId,
+        hash                = HashBinString,
+        piece_length        = PieceSize,
+        last_piece_length   = LastPieceLength,
+        last_piece_id       = LastPieceId
     },
     {reply, ok, NewState};
 
@@ -287,12 +287,12 @@ handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers
 %% @doc
 %% Async check is end
 %% @todo need test
-handle_info(is_end, State = #state{torrent_name = TorrentName, downloading_pieces = DownloadingPieces}) ->
+handle_info(is_end, State = #state{file_name = FileName, downloading_pieces = DownloadingPieces}) ->
     case is_end(DownloadingPieces) of
         [_|_] ->
             ok;
         []    ->
-            ok = erltorrent_helper:concat_file(TorrentName),
+            ok = erltorrent_helper:concat_file(FileName),
             lager:info("File has been downloaded successfully!"),
             exit(self(), completed)
     end,
@@ -358,14 +358,14 @@ assign_downloading_pieces([], Acc, _AlreadyAssigned, _State) ->
 
 assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, State) ->
     #state{
-        torrent_name = TorrentName,
-        pieces_peers = PiecesPeers,
-        downloading_pieces = DownloadingPieces,
-        peer_id = PeerId,
-        hash = Hash,
-        piece_length = PieceLength,
-        last_piece_length = LastPieceLength,
-        last_piece_id = LastPieceId
+        file_name           = FileName,
+        pieces_peers        = PiecesPeers,
+        downloading_pieces  = DownloadingPieces,
+        peer_id             = PeerId,
+        hash                = Hash,
+        piece_length        = PieceLength,
+        last_piece_length   = LastPieceLength,
+        last_piece_id       = LastPieceId
     } = State,
     Peers = dict:fetch(Id, PiecesPeers),
     % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
@@ -387,7 +387,7 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
                  true  -> LastPieceLength;
                  false -> PieceLength
             end,
-            {ok, Pid} = erltorrent_downloader:start(TorrentName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
+            {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
             Ref = erlang:monitor(process, Pid),
             NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
             #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
