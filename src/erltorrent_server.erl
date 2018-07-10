@@ -46,11 +46,11 @@
 
 -record(state, {
     file_name                        :: string(),
-    pieces_peers       = dict:new(),
+    pieces_peers       = dict:new()  :: dict:type(),
     downloading_pieces = []          :: [#downloading_piece{}],
     pieces_amount                    :: integer(),
-    peer_id,
-    hash,
+    peer_id                          :: binary,
+    hash                             :: binary(),
     piece_length                     :: integer(),
     last_piece_length                :: integer(),
     last_piece_id                    :: integer()
@@ -150,16 +150,13 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
-    FileName = dict:fetch(<<"name">>, Info),
-    Pieces = dict:fetch(<<"pieces">>, Info), % @todo verify pieces with hash
-    FullSize = dict:fetch(<<"length">>, Info),
-    PieceSize = dict:fetch(<<"piece length">>, Info),
-    TrackerLink = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
+    FileName     = dict:fetch(<<"name">>, Info),
+    Pieces       = dict:fetch(<<"pieces">>, Info), % @todo verify pieces with hash
+    FullSize     = dict:fetch(<<"length">>, Info),
+    PieceSize    = dict:fetch(<<"piece length">>, Info),
+    TrackerLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
     PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
-    lager:info("File name = ~p", [FileName]),
-    lager:info("Piece size = ~p bytes", [PieceSize]),
-    lager:info("Full file size = ~p", [FullSize]),
-    lager:info("Pieces amount = ~p", [PiecesAmount]),
+    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
 %%    <<FirstHash:20/binary, _Rest/binary>> = Pieces,
 %%    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
