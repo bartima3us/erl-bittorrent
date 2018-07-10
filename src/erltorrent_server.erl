@@ -251,7 +251,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 %% Handle async bitfield message from peer and assign new peers if needed
 %%
-handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces}) ->
+handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = PiecesPeers}) ->
     NewPiecesPeers = dict:map(
         fun (Id, Peers) ->
             % Check if this IP has an iterating piece
@@ -301,8 +301,8 @@ handle_info(is_end, State = #state{torrent_name = TorrentName, downloading_piece
 %% @doc
 %% Assign pieces for peers to download
 %% @todo need test
-handle_info(assign_downloading_pieces, State = #state{torrent_name = TorrentName, pieces_peers = PiecesPeers, downloading_pieces = DownloadingPieces, peer_id = PeerId, hash = Hash, piece_length = PieceLength, last_piece_length = LastPieceLength, last_piece_id = LastPieceId}) ->
-    NewDownloadingPieces = assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName),
+handle_info(assign_downloading_pieces, State = #state{}) ->
+    NewDownloadingPieces = assign_downloading_pieces(State),
     self() ! is_end,
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
@@ -349,14 +349,24 @@ handle_info(_Info, State) ->
 
 %% @doc
 %% Assign free peers to download pieces
-%% @todo change all arguments to one: State
-assign_downloading_pieces(DownloadingPieces, PiecesPeers, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName) ->
-    assign_downloading_pieces(DownloadingPieces, [], [], PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName).
+%%
+assign_downloading_pieces(State = #state{downloading_pieces = DownloadingPieces}) ->
+    assign_downloading_pieces(DownloadingPieces, [], [], State).
 
-assign_downloading_pieces([], Acc, _AlreadyAssigned, _PiecesPeers, _DownloadingPieces, _PeerId, _Hash, _PieceLength, _LastPieceLength, _LastPieceId, _TorrentName) ->
+assign_downloading_pieces([], Acc, _AlreadyAssigned, _State) ->
     Acc;
 
-assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName) ->
+assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, State) ->
+    #state{
+        torrent_name = TorrentName,
+        pieces_peers = PiecesPeers,
+        downloading_pieces = DownloadingPieces,
+        peer_id = PeerId,
+        hash = Hash,
+        piece_length = PieceLength,
+        last_piece_length = LastPieceLength,
+        last_piece_id = LastPieceId
+    } = State,
     Peers = dict:fetch(Id, PiecesPeers),
     % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
     AvailablePeers = lists:filter(
@@ -385,11 +395,11 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
             NewAlreadyAssigned = AlreadyAssigned,
             #downloading_piece{piece_id = Id}
     end,
-    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName);
+    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, State);
 
 % Skip pieces with other status than `false`
-assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName) ->
-    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, PiecesPeers, DownloadingPieces, PeerId, Hash, PieceLength, LastPieceLength, LastPieceId, TorrentName).
+assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, State) ->
+    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, State).
 
 
 %%--------------------------------------------------------------------
