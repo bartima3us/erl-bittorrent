@@ -35,7 +35,13 @@
 
 -define(SERVER, ?MODULE).
 
--define(SOCKETS_FOR_DOWNLOADING_LIMIT, 30).
+-ifndef(TEST).
+    -define(SOCKETS_FOR_DOWNLOADING_LIMIT, 30).
+-endif.
+
+-ifdef(TEST).
+    -define(SOCKETS_FOR_DOWNLOADING_LIMIT, 8).
+-endif.
 
 -record(downloading_piece, {
     piece_id            :: piece_id_int(),
@@ -283,7 +289,7 @@ handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers
 
 %% @doc
 %% Async check is end
-%% @todo need test
+%%
 handle_info(is_end, State = #state{file_name = FileName, downloading_pieces = DownloadingPieces}) ->
     case is_end(DownloadingPieces) of
         [_|_] ->
@@ -291,13 +297,13 @@ handle_info(is_end, State = #state{file_name = FileName, downloading_pieces = Do
         []    ->
             ok = erltorrent_helper:concat_file(FileName),
             lager:info("File has been downloaded successfully!"),
-            exit(self(), completed)
+            erltorrent_helper:do_exit(self(), completed)
     end,
     {noreply, State};
 
 %% @doc
 %% Assign pieces for peers to download
-%% @todo need test
+%%
 handle_info(assign_downloading_pieces, State = #state{}) ->
     NewDownloadingPieces = assign_downloading_pieces(State),
     self() ! is_end,
@@ -351,7 +357,7 @@ assign_downloading_pieces(State = #state{downloading_pieces = DownloadingPieces}
     assign_downloading_pieces(DownloadingPieces, [], [], State).
 
 assign_downloading_pieces([], Acc, _AlreadyAssigned, _State) ->
-    Acc;
+    lists:reverse(Acc);
 
 assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, State) ->
     #state{
@@ -385,7 +391,7 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
                  false -> PieceLength
             end,
             {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
-            Ref = erlang:monitor(process, Pid),
+            Ref = erltorrent_helper:do_monitor(process, Pid),
             NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
             #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
         _ ->
@@ -605,6 +611,197 @@ get_downloading_piece_test_() ->
             handle_call({downloading_piece, 3}, from, State)
         )
     ].
+
+
+check_if_all_pieces_downloaded_test_() ->
+    {setup,
+        fun() ->
+            ok = meck:new(erltorrent_helper),
+            ok = meck:expect(erltorrent_helper, concat_file, ['_'], ok),
+            ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], ok)
+        end,
+        fun(_) ->
+            true = meck:validate(erltorrent_helper),
+            ok = meck:unload(erltorrent_helper)
+        end,
+        [{"Somes pieces aren't downloaded.",
+            fun() ->
+                State = #state{
+                    file_name = "test.mkv",
+                    downloading_pieces = [
+                        #downloading_piece{status = completed},
+                        #downloading_piece{status = downloading},
+                        #downloading_piece{status = completed},
+                        #downloading_piece{status = false}
+                    ]
+                },
+                {noreply, State} = handle_info(is_end, State),
+                0 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
+                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', '_'])
+            end
+        },
+        {"All pieces are downloaded.",
+            fun() ->
+                State = #state{
+                    file_name = "test.mkv",
+                    downloading_pieces = [
+                        #downloading_piece{status = completed},
+                        #downloading_piece{status = completed},
+                        #downloading_piece{status = completed}
+                    ]
+                },
+                {noreply, State} = handle_info(is_end, State),
+                1 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
+                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', '_'])
+            end
+        }]
+    }.
+
+
+assign_downloading_pieces_test_() ->
+    Ref = make_ref(),
+    BaseState = #state{
+        file_name = "test.mkv",
+        peer_id = <<"P33rId">>,
+        hash = <<"h4sh">>,
+        piece_length = 16384,
+        last_piece_length = 4200,
+        last_piece_id = 10
+    },
+    {setup,
+        fun() ->
+            ok = meck:new([erltorrent_helper, erltorrent_downloader]),
+            ok = meck:expect(erltorrent_helper, concat_file, ['_'], ok),
+            ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], ok),
+            ok = meck:expect(erltorrent_helper, do_monitor, [process, '_'], Ref),
+            ok = meck:expect(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_'], {ok, list_to_pid("<0.0.8>")})
+        end,
+        fun(_) ->
+            true = meck:validate([erltorrent_helper, erltorrent_downloader]),
+            ok = meck:unload([erltorrent_helper, erltorrent_downloader])
+        end,
+        [{"Can't assign new peer because all appropriate are busy.",
+            fun() ->
+                PiecesPeers = dict:store(0, [], dict:new()),
+                PiecesPeers1 = dict:store(1, [{{127,0,0,1}, 8901}], PiecesPeers),
+                PiecesPeers2 = dict:store(2, [{{127,0,0,3}, 8903}], PiecesPeers1),
+                PiecesPeers3 = dict:store(3, [{{127,0,0,3}, 8903}, {{127,0,0,33}, 8933}], PiecesPeers2),
+                State = BaseState#state{
+                    pieces_peers = PiecesPeers3,
+                    downloading_pieces = [
+                        #downloading_piece{piece_id = 1, status = completed},
+                        #downloading_piece{piece_id = 2, status = false},
+                        #downloading_piece{piece_id = 3, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading}
+                    ]
+                },
+                % State didn't changed
+                {noreply, State} = handle_info(assign_downloading_pieces, State),
+                0 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
+                0 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
+            end
+        },
+        {"Can't assign new peer because socket limit is exceeded.",
+            fun() ->
+                PiecesPeers = dict:store(0, [], dict:new()),
+                PiecesPeers1 = dict:store(1, [{{127,0,0,1}, 8901}], PiecesPeers),
+                PiecesPeers2 = dict:store(2, [{{127,0,0,2}, 8902}, {{127,0,0,22}, 8922}], PiecesPeers1),
+                PiecesPeers3 = dict:store(3, [{{127,0,0,3}, 8903}, {{127,0,0,33}, 8933}], PiecesPeers2),
+                PiecesPeers4 = dict:store(4, [{{127,0,0,4}, 8904}, {{127,0,0,44}, 8944}], PiecesPeers3),
+                PiecesPeers5 = dict:store(5, [{{127,0,0,5}, 8905}], PiecesPeers4),
+                PiecesPeers6 = dict:store(6, [{{127,0,0,6}, 8906}, {{127,0,0,66}, 8966}], PiecesPeers5),
+                PiecesPeers7 = dict:store(7, [{{127,0,0,7}, 8907}, {{127,0,0,77}, 8977}], PiecesPeers6),
+                PiecesPeers8 = dict:store(8, [{{127,0,0,8}, 8908}], PiecesPeers7),
+                PiecesPeers9 = dict:store(9, [{{127,0,0,9}, 8909}], PiecesPeers8),
+                State = BaseState#state{
+                    pieces_peers = PiecesPeers9,
+                    downloading_pieces = [
+                        #downloading_piece{piece_id = 1, monitor_ref = Ref, ip_port = {{127,0,0,1}, 8901}, status = downloading},
+                        #downloading_piece{piece_id = 2, monitor_ref = Ref, ip_port = {{127,0,0,2}, 8902}, status = downloading},
+                        #downloading_piece{piece_id = 3, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 4, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 5, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 6, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 7, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 8, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 9, status = false}
+                    ]
+                },
+                % State didn't changed
+                {noreply, State} = handle_info(assign_downloading_pieces, State),
+                0 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
+                0 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
+            end
+        },
+        {"Can't assign new peer because the only available becomes already assigned.",
+            fun() ->
+                PiecesPeers = dict:store(0, [], dict:new()),
+                PiecesPeers1 = dict:store(1, [{{127,0,0,1}, 8901}], PiecesPeers),
+                PiecesPeers2 = dict:store(2, [{{127,0,0,3}, 8903}], PiecesPeers1),
+                PiecesPeers3 = dict:store(3, [{{127,0,0,3}, 8903}], PiecesPeers2),
+                State = BaseState#state{
+                    pieces_peers = PiecesPeers3,
+                    downloading_pieces = [
+                        #downloading_piece{piece_id = 1, status = completed},
+                        #downloading_piece{piece_id = 2, status = false},
+                        #downloading_piece{piece_id = 3, status = false}
+                    ]
+                },
+                NewState = State#state{
+                    downloading_pieces = [
+                        #downloading_piece{piece_id = 1, status = completed},
+                        #downloading_piece{piece_id = 2, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 3, status = false}
+                    ]
+                },
+                {noreply, NewState} = handle_info(assign_downloading_pieces, State),
+                1 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
+                1 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
+            end
+        },
+        {"New peers assigned successfully.",
+            fun() ->
+                PiecesPeers = dict:store(0, [], dict:new()),
+                PiecesPeers1 = dict:store(1, [{{127,0,0,1}, 8901}], PiecesPeers),
+                PiecesPeers2 = dict:store(2, [{{127,0,0,2}, 8902}, {{127,0,0,22}, 8922}], PiecesPeers1),
+                PiecesPeers3 = dict:store(3, [{{127,0,0,3}, 8903}, {{127,0,0,33}, 8933}], PiecesPeers2),
+                PiecesPeers4 = dict:store(4, [{{127,0,0,4}, 8904}, {{127,0,0,44}, 8944}], PiecesPeers3),
+                PiecesPeers5 = dict:store(5, [{{127,0,0,5}, 8905}], PiecesPeers4),
+                PiecesPeers6 = dict:store(6, [{{127,0,0,6}, 8906}, {{127,0,0,66}, 8966}], PiecesPeers5),
+                PiecesPeers7 = dict:store(7, [{{127,0,0,7}, 8907}, {{127,0,0,77}, 8977}], PiecesPeers6),
+                PiecesPeers8 = dict:store(8, [{{127,0,0,8}, 8908}], PiecesPeers7),
+                State = BaseState#state{
+                    pieces_peers = PiecesPeers8,
+                    downloading_pieces = [
+                        #downloading_piece{piece_id = 1, status = completed},
+                        #downloading_piece{piece_id = 2, status = false},
+                        #downloading_piece{piece_id = 3, status = false},
+                        #downloading_piece{piece_id = 4, monitor_ref = Ref, ip_port = {{127,0,0,4}, 8904}, status = downloading},
+                        #downloading_piece{piece_id = 5, status = completed},
+                        #downloading_piece{piece_id = 6, status = false},
+                        #downloading_piece{piece_id = 7, status = false},
+                        #downloading_piece{piece_id = 8, status = false}
+                    ]
+                },
+                NewState = State#state{
+                    downloading_pieces = [
+                        #downloading_piece{piece_id = 1, status = completed},
+                        #downloading_piece{piece_id = 2, monitor_ref = Ref, ip_port = {{127,0,0,2}, 8902}, status = downloading},
+                        #downloading_piece{piece_id = 3, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading},
+                        #downloading_piece{piece_id = 4, monitor_ref = Ref, ip_port = {{127,0,0,4}, 8904}, status = downloading},
+                        #downloading_piece{piece_id = 5, status = completed},
+                        #downloading_piece{piece_id = 6, monitor_ref = Ref, ip_port = {{127,0,0,6}, 8906}, status = downloading},
+                        #downloading_piece{piece_id = 7, monitor_ref = Ref, ip_port = {{127,0,0,7}, 8907}, status = downloading},
+                        #downloading_piece{piece_id = 8, monitor_ref = Ref, ip_port = {{127,0,0,8}, 8908}, status = downloading}
+                    ]
+                },
+                {noreply, NewState} = handle_info(assign_downloading_pieces, State),
+                % 5 + 1 = 6 (5 from this case and 1 from one before)
+                6 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
+                6 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
+            end
+        }]
+    }.
+
 
 -endif.
 

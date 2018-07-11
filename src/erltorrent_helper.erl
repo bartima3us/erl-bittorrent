@@ -23,7 +23,9 @@
     compare_block/2,
     get_meta_data/0,
     compare_last_piece/0,
-    compare_files/2
+    compare_files/2,
+    do_exit/2,
+    do_monitor/2
 ]).
 
 
@@ -179,6 +181,20 @@ sort_with_split(Files) ->
     ),
     List3 = lists:sort(List2),
     lists:map(fun (File) -> integer_to_list(File) ++ ".block" end, List3).
+
+
+%% @doc
+%% Exit process fun. Need because of mock purposes for tests.
+%%
+do_exit(Pid, Reason) ->
+    exit(Pid, Reason).
+
+
+%% @doc
+%% Monitor fun. Need because of mock purposes for tests.
+%%
+do_monitor(Type, Pid) ->
+    erlang:monitor(Type, Pid).
 
 
 

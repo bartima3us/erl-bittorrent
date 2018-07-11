@@ -143,7 +143,7 @@ handle_cast(request_piece, State) ->
             ok = erltorrent_helper:get_packet(Socket);
         false ->
             % @todo need to send end game message
-            exit(self(), completed)
+            erltorrent_helper:do_exit(self(), completed)
     end,
     {noreply, State};
 
@@ -243,7 +243,7 @@ handle_info(is_alive, State = #state{last_action = LastAction}) ->
         % @todo need to make smarter algorithm. If all peers internet is very slow, this process will crash without downloading any part.
         % @todo Also if internet from current peer is slow but not slow enough to exceed last_action limit, piece will be downloading too slow.
         % @todo An idea: store in Mnesia peers speed and check in DB for faster peers and if peer is too slow, kill that process and make a new one with another peer.
-        true  -> exit(self(), timeouted);
+        true  -> erltorrent_helper:do_exit(self(), timeouted);
         false -> ok
     end,
     {noreply, State};

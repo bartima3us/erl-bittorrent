@@ -180,7 +180,7 @@ handle_info({tcp, _Port, Packet}, State) ->
 %%
 handle_info({tcp_closed, Socket}, State = #state{socket = Socket}) ->
     lager:info("Socket closed! State=~p", [State]),
-    exit(normal),
+    erltorrent_helper:do_exit(self(), tcp_closed),
     {noreply, State};
 
 %% @doc
