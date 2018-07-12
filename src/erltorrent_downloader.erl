@@ -92,7 +92,7 @@ init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength]) -
         hash            = Hash,
         piece_length    = PieceLength,
         last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
-        count           = 0
+        count           = erltorrent_store:read_piece(Hash, PieceId, read)
     },
     self() ! start,
     {ok, State}.
@@ -134,7 +134,8 @@ handle_cast(request_piece, State) ->
         socket       = Socket,
         piece_id     = PieceId,
         piece_length = PieceLength,
-        count        = Count
+        count        = Count,
+        hash         = Hash
     } = State,
     {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
     % Check if file isn't downloaded yet
@@ -144,6 +145,7 @@ handle_cast(request_piece, State) ->
             ok = erltorrent_helper:get_packet(Socket);
         false ->
             % @todo need to send end game message
+            erltorrent_store:mark_piece_completed(Hash, PieceId),
             erltorrent_helper:do_exit(self(), completed)
     end,
     {noreply, State};
@@ -177,11 +179,13 @@ handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerI
 %%
 handle_info({tcp, _Port, Packet}, State) ->
     #state{
+        piece_id    = PieceId,
         torrent_id  = TorrentId,
         count       = Count,
         parser_pid  = ParserPid,
         socket      = Socket,
-        peer_state  = PeerState
+        peer_state  = PeerState,
+        hash        = Hash
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
@@ -221,7 +225,7 @@ handle_info({tcp, _Port, Packet}, State) ->
             case lists:filtermap(WriteFun, Data) of
                 [_|_]   ->
                     request_piece(),                      % If we have received any piece, go to another one
-                    Count + 1;
+                    erltorrent_store:read_piece(Hash, PieceId, update);
                 _       ->
                     erltorrent_helper:get_packet(Socket), % If we haven't received any piece, take more from socket
                     Count

@@ -13,6 +13,7 @@
 -behaviour(gen_server).
 
 -include("erltorrent.hrl").
+-include("erltorrent_store.hrl").
 
 %% API
 -export([
@@ -156,19 +157,26 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
-    FileName     = dict:fetch(<<"name">>, Info),
     Pieces       = dict:fetch(<<"pieces">>, Info), % @todo verify pieces with hash
     FullSize     = dict:fetch(<<"length">>, Info),
     PieceSize    = dict:fetch(<<"piece length">>, Info),
     TrackerLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
     PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
-    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
 %%    <<FirstHash:20/binary, _Rest/binary>> = Pieces,
 %%    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
     HashBinString = crypto:hash(sha, BencodedInfo),
     Hash = erltorrent_helper:urlencode(HashBinString),
+    FileName = case erltorrent_store:read_file(HashBinString) of
+        false ->
+            FName = dict:fetch(<<"name">>, Info),
+            erltorrent_store:insert_file(HashBinString, FName),
+            FName;
+        #erltorrent_store_file{file_name = FName} ->
+            FName
+    end,
+    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
     {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
     PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
     lists:map(
@@ -182,7 +190,7 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     % Fill empty pieces peers and downloading pieces
     IdsList = lists:seq(0, LastPieceId),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
-    NewDownloadingPieces = lists:map(fun (Id) -> #downloading_piece{piece_id = Id} end, IdsList),
+    NewDownloadingPieces = make_downloading_pieces(HashBinString, IdsList),
     NewState = State#state{
         file_name           = FileName,
         pieces_amount       = PiecesAmount,
@@ -459,9 +467,9 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
     AvailablePeers = lists:filter(
         fun (Peer) ->
             AlreadyDownloading = case lists:keysearch(Peer, #downloading_piece.ip_port, DownloadingPieces) of
-                                     false -> false;
-                                     _     -> true
-                                 end,
+                false -> false;
+                _     -> true
+            end,
             SocketsForDownloading = length(AlreadyAssigned) + count_downloading(DownloadingPieces),
             not(lists:member(Peer, AlreadyAssigned)) and not(AlreadyDownloading) and not(SocketsForDownloading >= ?SOCKETS_FOR_DOWNLOADING_LIMIT)
         end,
@@ -469,24 +477,44 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
     ),
     % Assign peers to pieces if there are available peers
     DownloadingPiece = case AvailablePeers of
-                           [{Ip, Port}|_] ->
-                               CurrentPieceLength = case Id =:= LastPieceId of
-                                                        true  -> LastPieceLength;
-                                                        false -> PieceLength
-                                                    end,
-                               {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
-                               Ref = erltorrent_helper:do_monitor(process, Pid),
-                               NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
-                               #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
-                           _ ->
-                               NewAlreadyAssigned = AlreadyAssigned,
-                               #downloading_piece{piece_id = Id}
-                       end,
+        [{Ip, Port}|_] ->
+            CurrentPieceLength = case Id =:= LastPieceId of
+            true  -> LastPieceLength;
+            false -> PieceLength
+        end,
+            {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
+            Ref = erltorrent_helper:do_monitor(process, Pid),
+            NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
+            #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
+        _ ->
+        NewAlreadyAssigned = AlreadyAssigned,
+            #downloading_piece{piece_id = Id}
+    end,
     assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, State);
 
 % Skip pieces with other status than `false`
 assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, State) ->
     assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, State).
+
+
+%% @doc
+%% Make new downloading pieces state from persisted state if it exists.
+%%
+make_downloading_pieces(Hash, IdsList) ->
+    PersistedPieces = erltorrent_store:read_pieces(Hash),
+    lists:map(
+        fun (Id) ->
+            case lists:keysearch(Id, #erltorrent_store_piece.piece_id, PersistedPieces) of
+                false ->
+                    #downloading_piece{piece_id = Id};
+                {value, #erltorrent_store_piece{status = downloading}} ->
+                    #downloading_piece{piece_id = Id};
+                {value, #erltorrent_store_piece{status = completed}} ->
+                    #downloading_piece{piece_id = Id, status = completed}
+            end
+        end,
+        IdsList
+    ).
 
 
 
@@ -800,6 +828,56 @@ assign_downloading_pieces_test_() ->
                 % 5 + 1 = 6 (5 from this case and 1 from one before)
                 6 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
                 6 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
+            end
+        }]
+    }.
+
+
+make_downloading_pieces_test_() ->
+    {setup,
+        fun() ->
+            PersistedPieces = [
+                #erltorrent_store_piece{piece_id = 1, status = completed},
+                #erltorrent_store_piece{piece_id = 3, status = downloading}
+            ],
+            ok = meck:new(erltorrent_store),
+            ok = meck:expect(
+                erltorrent_store,
+                read_pieces,
+                fun
+                    (<<60, 10>>) ->
+                        [];
+                    (<<14, 52>>) ->
+                        PersistedPieces
+                end
+            )
+        end,
+        fun(_) ->
+            true = meck:validate(erltorrent_store),
+            ok = meck:unload(erltorrent_store)
+        end,
+        [{"Without persisted pieces.",
+            fun() ->
+                Result = [
+                    #downloading_piece{piece_id = 0},
+                    #downloading_piece{piece_id = 1},
+                    #downloading_piece{piece_id = 2},
+                    #downloading_piece{piece_id = 3},
+                    #downloading_piece{piece_id = 4}
+                ],
+                Result = make_downloading_pieces(<<60, 10>>, [0, 1, 2, 3, 4])
+            end
+        },
+        {"With persisted pieces.",
+            fun() ->
+                Result = [
+                    #downloading_piece{piece_id = 0},
+                    #downloading_piece{piece_id = 1, status = completed},
+                    #downloading_piece{piece_id = 2},
+                    #downloading_piece{piece_id = 3},
+                    #downloading_piece{piece_id = 4}
+                ],
+                Result = make_downloading_pieces(<<14, 52>>, [0, 1, 2, 3, 4])
             end
         }]
     }.

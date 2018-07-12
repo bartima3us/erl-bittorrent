@@ -14,6 +14,16 @@
 -include("erltorrent_store.hrl").
 
 -define(SCHEMA_VERSION, 0).
+-define(TABLE_SET(N, O), mnesia:create_table(N, [{attributes, record_info(fields, N)}, O])).
+-define(TABLE_BAG(N, O), mnesia:create_table(N, [{type, bag}, {attributes, record_info(fields, N)}, O])).
+
+-export([
+    insert_file/2,
+    read_file/1,
+    read_piece/3,
+    read_pieces/1,
+    mark_piece_completed/2
+]).
 
 -export([
     wait_for_tables/1
@@ -22,27 +32,113 @@
 
 
 %%%===================================================================
-%%% Startup functions
+%%% API
 %%%===================================================================
 
-tables() -> [
-    erltorrent_store_files,
-    erltorrent_store_meta
-].
+%% @doc
+%% Get file by hash
+%%
+read_file(Hash) ->
+    Fun = fun() ->
+        case mnesia:read(erltorrent_store_file, Hash) of
+            [Fetched = #erltorrent_store_file{}] -> Fetched;
+            [] -> false
+        end
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
 
 
 %% @doc
-%%  Creates mnesia tables.
+%% Insert new file
 %%
-create_tables(Nodes) ->
-    OptDC = {disc_copies, Nodes},
-    CreateTableCheckFun = fun
-        ({atomic, ok}) -> ok;
-        ({aborted, {already_exists, _Table}}) -> ok
+insert_file(Hash, FileName) ->
+    Fun = fun() ->
+        File = #erltorrent_store_file{
+            hash      = Hash,
+            file_name = FileName
+        },
+        mnesia:write(File)
     end,
-    ok = CreateTableCheckFun(mnesia:create_table(erltorrent_store_files, [{attributes, record_info(fields, erltorrent_store_files)}, OptDC])),
-    ok = CreateTableCheckFun(mnesia:create_table(erltorrent_store_meta,  [{attributes, record_info(fields, erltorrent_store_meta)}, OptDC])),
-    ok.
+    {atomic, ok} = mnesia:transaction(Fun).
+
+
+%% @doc
+%% Get all pieces state by hash.
+%%
+read_pieces(Hash) ->
+    Fun = fun() ->
+        mnesia:match_object({erltorrent_store_piece, '_', Hash, '_', '_', '_', '_', '_'})
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%% @doc
+%% Get current piece state. Update it if needed.
+%%
+read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= update ->
+    Fun = fun() ->
+        case mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}) of
+            [Result = #erltorrent_store_piece{count = Count}] ->
+                case SubAction of
+                    read   ->
+                        Count;
+                    update ->
+                        NewCount = Count + 1,
+                        UpdatedPiece = Result#erltorrent_store_piece{
+                            count       = NewCount,
+                            updated_at  = calendar:datetime_to_gregorian_seconds(calendar:local_time())
+                        },
+                        % @todo solve error after download restarting
+                        mnesia:write(erltorrent_store_piece, UpdatedPiece, write),
+                        NewCount
+                end;
+            []       ->
+                Piece = #erltorrent_store_piece{
+                    id        = os:timestamp(),
+                    hash      = Hash,
+                    piece_id  = PieceId,
+                    count     = 0,
+                    status    = downloading,
+                    started   = calendar:datetime_to_gregorian_seconds(calendar:local_time())
+                },
+                mnesia:write(Piece),
+                0
+        end
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%% @doc
+%% Change piece status to completed.
+%%
+mark_piece_completed(Hash, PieceId) ->
+    Fun = fun() ->
+        [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
+        UpdatedPiece = Result#erltorrent_store_piece{
+            status  = completed
+        },
+        mnesia:write(erltorrent_store_piece, UpdatedPiece, write)
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+
+%%%===================================================================
+%%% Startup functions
+%%%===================================================================
+
+%% @doc
+%% Tables list
+%%
+tables() -> [
+    erltorrent_store_file,
+    erltorrent_store_meta,
+    erltorrent_store_piece
+].
 
 
 %% @doc
@@ -64,6 +160,21 @@ wait_for_tables(Timeout) ->
 
 
 %% @doc
+%%  Creates mnesia tables.
+%%
+create_tables(Nodes) ->
+    OptDC = {disc_copies, Nodes},
+    CreateTableCheckFun = fun
+        ({atomic, ok}) -> ok;
+        ({aborted, {already_exists, _Table}}) -> ok
+    end,
+    ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_file, OptDC)),
+    ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_piece, OptDC)),
+    ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_meta, OptDC)),
+    ok.
+
+
+%% @doc
 %% Update schema if necessary.
 %%
 schema_change(Version, Version) ->
@@ -77,11 +188,6 @@ schema_change(CurrentSchemaVersion, NewSchemaVersion) when CurrentSchemaVersion 
 do_schema_change(_CurrentSchemaVersion, _NewSchemaVersion) ->
     ok.
 
-
-
-%%%===================================================================
-%%% Query functions
-%%%===================================================================
 
 %% @doc
 %% Update schema version.
