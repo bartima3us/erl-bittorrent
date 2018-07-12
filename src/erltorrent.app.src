@@ -6,7 +6,8 @@
   {applications, [
                   kernel,
                   stdlib,
-                  lager
+                  lager,
+                  mnesia
                  ]},
   {mod, { erltorrent_app, []}},
   {env, []}

@@ -36,7 +36,7 @@
     socket                      :: port(),
     piece_id                    :: binary(),
     piece_length                :: integer(), % Full length of piece
-    count           = 0         :: integer(),
+    count                       :: integer(),
     parser_pid                  :: pid(),
     server_pid                  :: pid(),
     peer_state      = choke     :: choke | unchoke,
@@ -91,7 +91,8 @@ init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength]) -
         peer_id         = PeerId,
         hash            = Hash,
         piece_length    = PieceLength,
-        last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time())
+        last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+        count           = 0
     },
     self() ! start,
     {ok, State}.

@@ -1,0 +1,10 @@
+2018-07-12 19:03:24.978 [info] <0.31.0> Application lager started on node 'erltorrent@sarunas-ThinkPad-E560'
+2018-07-12 19:03:25.115 [info] <0.31.0> Application mnesia started on node 'erltorrent@sarunas-ThinkPad-E560'
+2018-07-12 19:03:25.118 [info] <0.31.0> Application erltorrent started on node 'erltorrent@sarunas-ThinkPad-E560'
+2018-07-12 19:03:59.720 [info] <0.31.0> Application lager started on node 'erltorrent@sarunas-ThinkPad-E560'
+2018-07-12 19:03:59.854 [info] <0.31.0> Application mnesia started on node 'erltorrent@sarunas-ThinkPad-E560'
+2018-07-12 19:03:59.861 [info] <0.31.0> Application mnesia exited with reason: stopped
+2018-07-12 19:03:59.905 [info] <0.31.0> Application mnesia started on node 'erltorrent@sarunas-ThinkPad-E560'
+2018-07-12 19:03:59.906 [error] <0.195.0>@erltorrent_store:create_tables:43 CRASH REPORT Process <0.195.0> with 0 neighbours exited with reason: no match of right hand value {aborted,{bad_type,erltorrent_store_files,{attributes,[file]}}} in erltorrent_store:create_tables/1 line 43 in application_master:init/4 line 134
+2018-07-12 19:03:59.910 [info] <0.31.0>@erltorrent_store:create_tables:43 Application erltorrent exited with reason: no match of right hand value {aborted,{bad_type,erltorrent_store_files,{attributes,[file]}}} in erltorrent_store:create_tables/1 line 43
+2018-07-12 19:03:59.912 [info] <0.31.0> Application mnesia exited with reason: stopped

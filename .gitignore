@@ -12,3 +12,4 @@ downloads/*
 src/test_send.erl
 log/*
 !log/.gitkeep
+*.iml

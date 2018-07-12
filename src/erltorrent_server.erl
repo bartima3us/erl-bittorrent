@@ -350,60 +350,6 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 
-%% @doc
-%% Assign free peers to download pieces
-%%
-assign_downloading_pieces(State = #state{downloading_pieces = DownloadingPieces}) ->
-    assign_downloading_pieces(DownloadingPieces, [], [], State).
-
-assign_downloading_pieces([], Acc, _AlreadyAssigned, _State) ->
-    lists:reverse(Acc);
-
-assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, State) ->
-    #state{
-        file_name           = FileName,
-        pieces_peers        = PiecesPeers,
-        downloading_pieces  = DownloadingPieces,
-        peer_id             = PeerId,
-        hash                = Hash,
-        piece_length        = PieceLength,
-        last_piece_length   = LastPieceLength,
-        last_piece_id       = LastPieceId
-    } = State,
-    Peers = dict:fetch(Id, PiecesPeers),
-    % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
-    AvailablePeers = lists:filter(
-        fun (Peer) ->
-            AlreadyDownloading = case lists:keysearch(Peer, #downloading_piece.ip_port, DownloadingPieces) of
-                false -> false;
-                _     -> true
-            end,
-            SocketsForDownloading = length(AlreadyAssigned) + count_downloading(DownloadingPieces),
-            not(lists:member(Peer, AlreadyAssigned)) and not(AlreadyDownloading) and not(SocketsForDownloading >= ?SOCKETS_FOR_DOWNLOADING_LIMIT)
-        end,
-        Peers
-    ),
-    % Assign peers to pieces if there are available peers
-    DownloadingPiece = case AvailablePeers of
-        [{Ip, Port}|_] ->
-            CurrentPieceLength = case Id =:= LastPieceId of
-                 true  -> LastPieceLength;
-                 false -> PieceLength
-            end,
-            {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
-            Ref = erltorrent_helper:do_monitor(process, Pid),
-            NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
-            #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
-        _ ->
-            NewAlreadyAssigned = AlreadyAssigned,
-            #downloading_piece{piece_id = Id}
-    end,
-    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, State);
-
-% Skip pieces with other status than `false`
-assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, State) ->
-    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, State).
-
 
 %%--------------------------------------------------------------------
 %% @private
@@ -486,6 +432,62 @@ count_downloading(DownloadingPieces) ->
         0,
         DownloadingPieces
     ).
+
+
+%% @doc
+%% Assign free peers to download pieces
+%%
+assign_downloading_pieces(State = #state{downloading_pieces = DownloadingPieces}) ->
+    assign_downloading_pieces(DownloadingPieces, [], [], State).
+
+assign_downloading_pieces([], Acc, _AlreadyAssigned, _State) ->
+    lists:reverse(Acc);
+
+assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T], Acc, AlreadyAssigned, State) ->
+    #state{
+        file_name           = FileName,
+        pieces_peers        = PiecesPeers,
+        downloading_pieces  = DownloadingPieces,
+        peer_id             = PeerId,
+        hash                = Hash,
+        piece_length        = PieceLength,
+        last_piece_length   = LastPieceLength,
+        last_piece_id       = LastPieceId
+    } = State,
+    Peers = dict:fetch(Id, PiecesPeers),
+    % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
+    AvailablePeers = lists:filter(
+        fun (Peer) ->
+            AlreadyDownloading = case lists:keysearch(Peer, #downloading_piece.ip_port, DownloadingPieces) of
+                                     false -> false;
+                                     _     -> true
+                                 end,
+            SocketsForDownloading = length(AlreadyAssigned) + count_downloading(DownloadingPieces),
+            not(lists:member(Peer, AlreadyAssigned)) and not(AlreadyDownloading) and not(SocketsForDownloading >= ?SOCKETS_FOR_DOWNLOADING_LIMIT)
+        end,
+        Peers
+    ),
+    % Assign peers to pieces if there are available peers
+    DownloadingPiece = case AvailablePeers of
+                           [{Ip, Port}|_] ->
+                               CurrentPieceLength = case Id =:= LastPieceId of
+                                                        true  -> LastPieceLength;
+                                                        false -> PieceLength
+                                                    end,
+                               {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
+                               Ref = erltorrent_helper:do_monitor(process, Pid),
+                               NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
+                               #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
+                           _ ->
+                               NewAlreadyAssigned = AlreadyAssigned,
+                               #downloading_piece{piece_id = Id}
+                       end,
+    assign_downloading_pieces(T, [DownloadingPiece|Acc], NewAlreadyAssigned, State);
+
+% Skip pieces with other status than `false`
+assign_downloading_pieces([Other = #downloading_piece{}|T], Acc, AlreadyAssigned, State) ->
+    assign_downloading_pieces(T, [Other|Acc], AlreadyAssigned, State).
+
 
 
 %%%===================================================================
@@ -694,7 +696,7 @@ assign_downloading_pieces_test_() ->
                         #downloading_piece{piece_id = 3, monitor_ref = Ref, ip_port = {{127,0,0,3}, 8903}, status = downloading}
                     ]
                 },
-                % State didn't changed
+                % State is the same
                 {noreply, State} = handle_info(assign_downloading_pieces, State),
                 0 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
                 0 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
@@ -726,7 +728,7 @@ assign_downloading_pieces_test_() ->
                         #downloading_piece{piece_id = 9, status = false}
                     ]
                 },
-                % State didn't changed
+                % State is the same
                 {noreply, State} = handle_info(assign_downloading_pieces, State),
                 0 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
                 0 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
