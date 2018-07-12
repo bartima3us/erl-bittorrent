@@ -10,7 +10,7 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-%%    ok = erltorrent_store:wait_for_tables(60000),
+    ok = erltorrent_store:wait_for_tables(20000),
     erltorrent_sup:start_link().
 
 stop(_State) ->

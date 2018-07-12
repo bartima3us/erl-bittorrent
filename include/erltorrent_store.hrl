@@ -1,5 +1,6 @@
 -record(erltorrent_store_files, {
-    file   :: term()
+    file   :: term(),
+    length :: integer()
 }).
 
 -record(erltorrent_store_meta, {
