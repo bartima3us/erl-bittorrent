@@ -60,7 +60,10 @@
     hash                             :: binary(),
     piece_length                     :: integer(),
     last_piece_length                :: integer(),
-    last_piece_id                    :: integer()
+    last_piece_id                    :: integer(),
+    pieces_hash                      :: binary(),
+    % @todo maybe need to persist give up limit?
+    give_up_limit      = 5           :: integer() % Give up all downloading limit if pieces hash is invalid
 }).
 
 % make start
@@ -157,14 +160,12 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
-    Pieces       = dict:fetch(<<"pieces">>, Info), % @todo verify pieces with hash
+    Pieces       = dict:fetch(<<"pieces">>, Info),
     FullSize     = dict:fetch(<<"length">>, Info),
     PieceSize    = dict:fetch(<<"piece length">>, Info),
     TrackerLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
     PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
-%%    <<FirstHash:20/binary, _Rest/binary>> = Pieces,
-%%    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
     HashBinString = crypto:hash(sha, BencodedInfo),
     Hash = erltorrent_helper:urlencode(HashBinString),
@@ -201,7 +202,8 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
         hash                = HashBinString,
         piece_length        = PieceSize,
         last_piece_length   = LastPieceLength,
-        last_piece_id       = LastPieceId
+        last_piece_id       = LastPieceId,
+        pieces_hash         = Pieces
     },
     {reply, ok, NewState};
 
@@ -261,6 +263,14 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+%% If give up limit is 0, kill the server
+%%
+handle_info(_Message, State = #state{give_up_limit = 0}) ->
+    lager:info("Downloading was stopped because of too many invalid pieces."),
+    erltorrent_helper:do_exit(self(), server_give_up),
+    {noreply, State};
+
+%% @doc
 %% Handle async bitfield message from peer and assign new peers if needed
 %%
 handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = PiecesPeers}) ->
@@ -331,24 +341,21 @@ handle_info({'DOWN', MonitorRef, process, _Pid, completed}, State = #state{downl
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
 
 %% @doc
+%% If downloaded piece hash was invalid, update state pieces downloading state and reduce give up limit
+%%
+handle_info({'DOWN', MonitorRef, process, _Pid, invalid_hash}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers, give_up_limit = GiveUpLimit}) ->
+    {value, #downloading_piece{piece_id = PieceId}} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
+    NewGiveUpLimit = GiveUpLimit - 1,
+    lager:info("Piece (ID=~p) hash is invalid! Tries left = ~p.", [PieceId, NewGiveUpLimit]),
+    {NewDownloadingPieces, NewPiecesPeers} = update_state_after_invalid_piece(MonitorRef, DownloadingPieces, PiecesPeers),
+    self() ! assign_downloading_pieces,
+    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers, give_up_limit = NewGiveUpLimit}};
+
+%% @doc
 %% Remove process from downloading pieces if it crashes. Move that peer into end of queue.
 %%
 handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers}) ->
-    % Remove peer from downloading list
-    {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
-    #downloading_piece{
-        piece_id = PieceId,
-        ip_port = {Ip, Port}
-    } = OldDownloadingPiece,
-    NewDownloadingPieces = lists:keyreplace(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces, #downloading_piece{piece_id = PieceId}),
-    % Move peer to the end of the queue
-    NewPiecesPeers = case dict:fetch(PieceId, PiecesPeers) of
-        Peers when length(Peers) > 0 ->
-            NewPeers = lists:append(lists:delete({Ip, Port}, Peers), [{Ip, Port}]),
-            dict:store(PieceId, NewPeers, PiecesPeers);
-        _ ->
-            PiecesPeers
-    end,
+    {NewDownloadingPieces, NewPiecesPeers} = update_state_after_invalid_piece(MonitorRef, DownloadingPieces, PiecesPeers),
     self() ! assign_downloading_pieces,
     {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers}};
 
@@ -430,6 +437,28 @@ is_end(DownloadingPieces) ->
 
 
 %% @doc
+%% If piece downloading was invalid, remove peer from downloading list and move it to the end of available peers.
+%%
+update_state_after_invalid_piece(MonitorRef, DownloadingPieces, PiecesPeers) ->
+    % Remove peer from downloading list
+    {value, OldDownloadingPiece} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
+    #downloading_piece{
+        piece_id = PieceId,
+        ip_port = {Ip, Port}
+    } = OldDownloadingPiece,
+    NewDownloadingPieces = lists:keyreplace(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces, #downloading_piece{piece_id = PieceId}),
+    % Move peer to the end of the queue
+    NewPiecesPeers = case dict:fetch(PieceId, PiecesPeers) of
+        Peers when length(Peers) > 0 ->
+            NewPeers = lists:append(lists:delete({Ip, Port}, Peers), [{Ip, Port}]),
+            dict:store(PieceId, NewPeers, PiecesPeers);
+        _ ->
+            PiecesPeers
+    end,
+    {NewDownloadingPieces, NewPiecesPeers}.
+
+
+%% @doc
 %% Count how many pieces are downloading at the moment
 %%
 count_downloading(DownloadingPieces) ->
@@ -461,7 +490,8 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
         hash                = Hash,
         piece_length        = PieceLength,
         last_piece_length   = LastPieceLength,
-        last_piece_id       = LastPieceId
+        last_piece_id       = LastPieceId,
+        pieces_hash         = PiecesHash
     } = State,
     Peers = dict:fetch(Id, PiecesPeers),
     % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
@@ -483,7 +513,9 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
             true  -> LastPieceLength;
             false -> PieceLength
         end,
-            {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength),
+            Exclude = Id * 20,
+            <<_:Exclude/binary, PieceHash:20/binary, _Rest/binary>> = PiecesHash,
+            {ok, Pid} = erltorrent_downloader:start(FileName, Id, Ip, Port, self(), PeerId, Hash, CurrentPieceLength, PieceHash),
             Ref = erltorrent_helper:do_monitor(process, Pid),
             NewAlreadyAssigned = [{Ip, Port}|AlreadyAssigned],
             #downloading_piece{piece_id = Id, ip_port = {Ip, Port}, monitor_ref = Ref, status = downloading};
@@ -691,13 +723,25 @@ check_if_all_pieces_downloaded_test_() ->
 
 assign_downloading_pieces_test_() ->
     Ref = make_ref(),
+    % 200 bytes
+    PiecesHash = <<230,119,162,11,8,38,192,0,15,0,16,17,24,9,166,181,210,167,176,
+        191,216,91,239,57,17,13,169,12,200,230,119,162,11,8,38,192,0,15,0,16,17,
+        24,9,166,181,210,167,176,191,216,91,239,57,17,13,169,12,200,230,119,162,
+        11,8,38,192,0,15,0,16,17,24,9,166,181,210,167,176,191,216,91,239,57,17,13,
+        169,12,200,230,119,162,11,8,38,192,0,15,0,16,17,24,9,166,181,210,167,176,
+        191,216,91,239,57,17,13,169,12,200,230,119,162,11,8,38,192,0,15,0,16,17,
+        24,9,166,181,210,167,176,191,216,91,239,57,17,13,169,12,200,230,119,162,
+        11,8,38,192,0,15,0,16,17,24,9,166,181,210,167,176,191,216,91,239,57,17,13,
+        169,12,200,57,17,13,169,12,200,57,17,13,169,12,200,57,17,13,169,12,200,57,
+        17,13,169,12,200,12,200>>,
     BaseState = #state{
-        file_name = "test.mkv",
-        peer_id = <<"P33rId">>,
-        hash = <<"h4sh">>,
-        piece_length = 16384,
-        last_piece_length = 4200,
-        last_piece_id = 10
+        file_name           = "test.mkv",
+        peer_id             = <<"P33rId">>,
+        hash                = <<"h4sh">>,
+        piece_length        = 16384,
+        last_piece_length   = 4200,
+        last_piece_id       = 10,
+        pieces_hash         = PiecesHash
     },
     {setup,
         fun() ->
@@ -705,7 +749,7 @@ assign_downloading_pieces_test_() ->
             ok = meck:expect(erltorrent_helper, concat_file, ['_'], ok),
             ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], ok),
             ok = meck:expect(erltorrent_helper, do_monitor, [process, '_'], Ref),
-            ok = meck:expect(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_'], {ok, list_to_pid("<0.0.8>")})
+            ok = meck:expect(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_', '_'], {ok, list_to_pid("<0.0.8>")})
         end,
         fun(_) ->
             true = meck:validate([erltorrent_helper, erltorrent_downloader]),
@@ -785,7 +829,7 @@ assign_downloading_pieces_test_() ->
                     ]
                 },
                 {noreply, NewState} = handle_info(assign_downloading_pieces, State),
-                1 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
+                1 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_', '_']),
                 1 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
             end
         },
@@ -827,7 +871,7 @@ assign_downloading_pieces_test_() ->
                 },
                 {noreply, NewState} = handle_info(assign_downloading_pieces, State),
                 % 5 + 1 = 6 (5 from this case and 1 from one before)
-                6 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_']),
+                6 = meck:num_calls(erltorrent_downloader, start, ['_', '_', '_', '_', '_', '_', '_', '_', '_']),
                 6 = meck:num_calls(erltorrent_helper, do_monitor, [process, '_'])
             end
         }]

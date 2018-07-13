@@ -22,7 +22,8 @@
     read_file/1,
     read_piece/3,
     read_pieces/1,
-    mark_piece_completed/2
+    mark_piece_completed/2,
+    mark_piece_new/2
 ]).
 
 -export([
@@ -119,6 +120,23 @@ mark_piece_completed(Hash, PieceId) ->
         [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
         UpdatedPiece = Result#erltorrent_store_piece{
             status  = completed
+        },
+        mnesia:write(erltorrent_store_piece, UpdatedPiece, write)
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%% @doc
+%% Change piece count to 0.
+%%
+mark_piece_new(Hash, PieceId) ->
+    Fun = fun() ->
+        [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
+        UpdatedPiece = Result#erltorrent_store_piece{
+            count       = 0,
+            started     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+            updated_at  = undefined
         },
         mnesia:write(erltorrent_store_piece, UpdatedPiece, write)
     end,

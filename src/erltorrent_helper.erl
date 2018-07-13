@@ -15,6 +15,8 @@
     random/1,
     convert_to_list/1,
     concat_file/1,
+    delete_downloaded_piece/2,
+    get_concated_piece/2,
     get_packet/1,
     bin_piece_id_to_int/1,
     int_piece_id_to_bin/1,
@@ -124,6 +126,37 @@ convert_to_list(Var) when is_list(Var) ->
 %%
 get_packet(Socket) ->
     inet:setopts(Socket, [{active, once}]).
+
+
+%% @doc
+%% Delete downloaded piece directory with all block
+%%
+delete_downloaded_piece(FileName, Piece) when is_integer(Piece) ->
+    delete_downloaded_piece(FileName, integer_to_list(Piece));
+
+delete_downloaded_piece(FileName, Piece) ->
+    PieceDir = filename:join(["temp", FileName, Piece]),
+    {ok, Blocks} = file:list_dir(PieceDir),
+    ReadBlockFun = fun(Block) ->
+        file:delete(filename:join(["temp", FileName, Piece, Block]))
+    end,
+    lists:map(ReadBlockFun, Blocks),
+    file:del_dir(PieceDir).
+
+
+%% @doc
+%% Concat all blocks to piece and return an IO list
+%%
+get_concated_piece(FileName, Piece) when is_integer(Piece) ->
+    get_concated_piece(FileName, integer_to_list(Piece));
+
+get_concated_piece(FileName, Piece) ->
+    {ok, Blocks} = file:list_dir(filename:join(["temp", FileName, Piece])),
+    ReadBlockFun = fun(Block) ->
+        {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, Block])),
+        Content
+    end,
+    lists:map(ReadBlockFun, sort_with_split(Blocks)).
 
 
 %% @doc

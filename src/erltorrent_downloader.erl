@@ -16,7 +16,7 @@
 
 %% API
 -export([
-    start/8
+    start/9
 ]).
 
 %% gen_server callbacks
@@ -43,7 +43,8 @@
     give_up_limit   = 3         :: integer(), % How much tries to get unchoke before giveup
     peer_id                     :: binary(),
     hash                        :: binary(),
-    last_action                 :: integer() % Gregorian seconds when last packet was received
+    last_action                 :: integer(), % Gregorian seconds when last packet was received
+    piece_hash                  :: binary()   % Piece confirm hash from torrent file
 }).
 
 % @todo unhardcode because all piece can be smaller than this number
@@ -62,8 +63,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength) ->
-    gen_server:start(?MODULE, [TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength], []).
+start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength, PieceHash) ->
+    gen_server:start(?MODULE, [TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength, PieceHash], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -81,7 +82,7 @@ start(TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength]) ->
+init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength, PieceHash]) ->
     State = #state{
         torrent_id      = TorrentId,
         peer_ip         = PeerIp,
@@ -92,7 +93,8 @@ init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength]) -
         hash            = Hash,
         piece_length    = PieceLength,
         last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
-        count           = erltorrent_store:read_piece(Hash, PieceId, read)
+        count           = erltorrent_store:read_piece(Hash, PieceId, read),
+        piece_hash      = PieceHash
     },
     self() ! start,
     {ok, State}.
@@ -156,11 +158,13 @@ handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerI
 %% @todo need a test
 handle_info(request_piece, State) ->
     #state{
+        torrent_id   = TorrentId,
         socket       = Socket,
         piece_id     = PieceId,
         piece_length = PieceLength,
         count        = Count,
-        hash         = Hash
+        hash         = Hash,
+        piece_hash   = PieceHash
     } = State,
     {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
     % Check if file isn't downloaded yet
@@ -170,8 +174,15 @@ handle_info(request_piece, State) ->
             ok = erltorrent_helper:get_packet(Socket);
         false ->
             % @todo need to send end game message
-            erltorrent_store:mark_piece_completed(Hash, PieceId),
-            erltorrent_helper:do_exit(self(), completed)
+            case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
+                true ->
+                    erltorrent_store:mark_piece_completed(Hash, PieceId),
+                    erltorrent_helper:do_exit(self(), completed);
+                false ->
+                    erltorrent_store:mark_piece_new(Hash, PieceId),
+                    erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
+                    erltorrent_helper:do_exit(self(), invalid_hash)
+            end
     end,
     {noreply, State};
 
@@ -179,7 +190,7 @@ handle_info(request_piece, State) ->
 %% If `unchoke` tries limit exceeded - kill that process
 %%
 handle_info({tcp, _Port, _Packet}, State = #state{give_up_limit = 0}) ->
-    erltorrent_helper:do_exit(self(), gave_up),
+    erltorrent_helper:do_exit(self(), give_up),
     {noreply, State};
 
 %% @doc
@@ -328,6 +339,14 @@ get_request_data(Count, PieceLength) ->
         false -> PieceLength - OffsetInt
     end,
     {ok, {NextLength, OffsetBin}}.
+
+
+%% @doc
+%% Confirm if piece hash is valid
+%%
+confirm_piece_hash(TorrentId, PieceHash, PieceId) ->
+    DownloadedPieceHash = erltorrent_helper:get_concated_piece(TorrentId, PieceId),
+    crypto:hash(sha, DownloadedPieceHash) =:= PieceHash.
 
 
 
