@@ -685,6 +685,7 @@ check_if_all_pieces_downloaded_test_() ->
         fun() ->
             ok = meck:new(erltorrent_helper),
             ok = meck:expect(erltorrent_helper, concat_file, ['_'], ok),
+            ok = meck:expect(erltorrent_helper, delete_downloaded_pieces, ['_'], ok),
             ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], ok)
         end,
         fun(_) ->
@@ -704,6 +705,7 @@ check_if_all_pieces_downloaded_test_() ->
                 },
                 {noreply, State} = handle_info(is_end, State),
                 0 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
+                0 = meck:num_calls(erltorrent_helper, delete_downloaded_pieces, ['_']),
                 0 = meck:num_calls(erltorrent_helper, do_exit, ['_', '_'])
             end
         },
@@ -719,6 +721,7 @@ check_if_all_pieces_downloaded_test_() ->
                 },
                 {noreply, State} = handle_info(is_end, State),
                 1 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
+                1 = meck:num_calls(erltorrent_helper, delete_downloaded_pieces, ['_']),
                 1 = meck:num_calls(erltorrent_helper, do_exit, ['_', '_'])
             end
         }]
