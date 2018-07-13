@@ -18,7 +18,7 @@
     get_packet/1,
     bin_piece_id_to_int/1,
     int_piece_id_to_bin/1,
-    confirm_hash/1,
+    confirm_hash/0,
     get_block/2,
     compare_block/2,
     get_meta_data/0,
@@ -205,21 +205,32 @@ do_monitor(Type, Pid) ->
 %%
 %%
 %%
-confirm_hash(Piece) ->
+confirm_hash() ->
     File = filename:join(["torrents", "[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent"]),
     {ok, Bin} = file:read_file(File),
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
     Pieces = dict:fetch(<<"pieces">>, Info),
-    Exclude = list_to_integer(Piece) * 20,
-    <<_Off:Exclude/binary, FirstHash:20/binary, _Rest/binary>> = Pieces,
-    io:format("First piece hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(FirstHash)]),
-
-    TorrentName = "[Commie] Banana Fish - 01 [3600C7D5].mkv",
-    write_piece(TorrentName, Piece),
-    {ok, DownloadedPiece} = file:read_file(filename:join(["downloads", TorrentName])),
-    DownloadedHash = crypto:hash(sha, DownloadedPiece),
-    io:format("Downloaded hash=~p~n", [erltorrent_bin_to_hex:bin_to_hex(DownloadedHash)]),
+    FullSize     = dict:fetch(<<"length">>, Info),
+    PieceSize    = dict:fetch(<<"piece length">>, Info),
+    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
+    lists:map(
+        fun(Piece) ->
+            Exclude = Piece * 20,
+            <<_Off:Exclude/binary, FirstHash:20/binary, _Rest/binary>> = Pieces,
+            PieceSize    = dict:fetch(<<"piece length">>, Info),
+            TorrentName = "[Commie] Banana Fish - 01 [3600C7D5].mkv",
+            {ok, IO} = file:open(filename:join(["downloads", TorrentName]), [read]),
+            {ok, DownloadedPiece} = file:pread(IO, PieceSize * Piece, PieceSize),
+            DownloadedHash = crypto:hash(sha, DownloadedPiece),
+            case DownloadedHash =:= FirstHash of
+                true -> ok;
+                false -> io:format("False on = ~p~n", [Piece])
+            end,
+            ok = file:close(IO)
+        end,
+        lists:seq(0, PiecesAmount - 1)
+    ),
     ok.
 
 
