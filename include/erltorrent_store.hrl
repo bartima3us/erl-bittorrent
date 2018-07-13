@@ -9,8 +9,8 @@
     piece_id    :: integer(),
     count       :: integer(),
     status      :: downloading | completed,
-    started     :: integer(), % When piece downloading started in Gregorian seconds
-    updated_at  :: integer()  % When last update took place in Gregorian seconds
+    started     :: integer(), % When piece downloading started in milliseconds timestamp
+    updated_at  :: integer()  % When last update took place in milliseconds timestamp
 }).
 
 -record(erltorrent_store_meta, {

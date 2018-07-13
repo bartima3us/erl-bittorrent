@@ -345,7 +345,7 @@ handle_info({'DOWN', MonitorRef, process, _Pid, completed}, State = #state{downl
 
 %% @doc
 %% If downloaded piece hash was invalid, update state pieces downloading state and reduce give up limit
-%%
+%% @todo make peer suspicious
 handle_info({'DOWN', MonitorRef, process, _Pid, invalid_hash}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers, give_up_limit = GiveUpLimit}) ->
     {value, #downloading_piece{piece_id = PieceId}} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
     NewGiveUpLimit = GiveUpLimit - 1,
@@ -497,6 +497,7 @@ assign_downloading_pieces([#downloading_piece{piece_id = Id, status = false}|T],
         pieces_hash         = PiecesHash
     } = State,
     Peers = dict:fetch(Id, PiecesPeers),
+    % @todo need peer's priorities. Prioritize by speed, suspicious conf and so on.
     % Get available peers. Available means that peer isn't assigned in this iteration yet and isn't assigned in the past. If current opened sockets for downloading is ?SOCKETS_FOR_DOWNLOADING_LIMIT, all peers aren't allowed at the moment.
     AvailablePeers = lists:filter(
         fun (Peer) ->

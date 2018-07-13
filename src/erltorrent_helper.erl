@@ -21,16 +21,20 @@
     get_packet/1,
     bin_piece_id_to_int/1,
     int_piece_id_to_bin/1,
+    do_exit/2,
+    do_monitor/2,
+    get_milliseconds_timestamp/0
+]).
+
+% Debug functions
+-export([
     confirm_hash/0,
     get_block/2,
     compare_block/2,
     get_meta_data/0,
     compare_last_piece/0,
-    compare_files/2,
-    do_exit/2,
-    do_monitor/2
+    compare_files/2
 ]).
-
 
 
 %%%===================================================================
@@ -244,6 +248,14 @@ do_exit(Pid, Reason) ->
 %%
 do_monitor(Type, Pid) ->
     erlang:monitor(Type, Pid).
+
+
+%% @doc
+%% Get current timestamp in milliseconds
+%%
+get_milliseconds_timestamp() ->
+    {Mega, Sec, Micro} = os:timestamp(),
+    (Mega * 1000000 + Sec) * 1000 + round(Micro / 1000).
 
 
 
