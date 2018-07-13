@@ -176,7 +176,7 @@ get_concated_piece(FileName, Piece) ->
         {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, Block])),
         Content
     end,
-    lists:map(ReadBlockFun, sort_with_split(Blocks)).
+    {ok, lists:map(ReadBlockFun, sort_with_split(Blocks))}.
 
 
 %% @doc
