@@ -3,9 +3,9 @@ Erlang BitTorrent client
 
 ![https://image.ibb.co/cKFVcT/erltorrent_small.png](https://image.ibb.co/cKFVcT/erltorrent_small.png)
 
-Only downloading at the moment. There is no any possibility to share downloaded file (real pirate's client). There is no possibility to download multiple files torrent at the moment.
+Currently only for downloading. There is no any possibility to share downloaded file (real pirate's client). There is no possibility to download multiple files torrent at the moment.
 
-Tested only on Lithuanian tracker 'Linkomanija'.
+Tested on Lithuanian trackers "Linkomanija" and "Torrent.lt".
 
 Tested on Erlang/OTP 18, Erlang/OTP 19, Erlang/OTP 20.
 
