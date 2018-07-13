@@ -16,6 +16,7 @@
     convert_to_list/1,
     concat_file/1,
     delete_downloaded_piece/2,
+    delete_downloaded_pieces/1,
     get_concated_piece/2,
     get_packet/1,
     bin_piece_id_to_int/1,
@@ -129,6 +130,20 @@ get_packet(Socket) ->
 
 
 %% @doc
+%% Delete all downloaded pieces
+%%
+delete_downloaded_pieces(FileName) ->
+    PiecesDir = filename:join(["temp", FileName]),
+    {ok, Pieces} = file:list_dir(PiecesDir),
+    WritePieceFun = fun(Piece) ->
+        delete_downloaded_piece(FileName, Piece)
+    end,
+    lists:map(WritePieceFun, Pieces),
+    file:del_dir(PiecesDir),
+    ok.
+
+
+%% @doc
 %% Delete downloaded piece directory with all block
 %%
 delete_downloaded_piece(FileName, Piece) when is_integer(Piece) ->
@@ -137,11 +152,12 @@ delete_downloaded_piece(FileName, Piece) when is_integer(Piece) ->
 delete_downloaded_piece(FileName, Piece) ->
     PieceDir = filename:join(["temp", FileName, Piece]),
     {ok, Blocks} = file:list_dir(PieceDir),
-    ReadBlockFun = fun(Block) ->
+    DeleteBlockFun = fun(Block) ->
         file:delete(filename:join(["temp", FileName, Piece, Block]))
     end,
-    lists:map(ReadBlockFun, Blocks),
-    file:del_dir(PieceDir).
+    lists:map(DeleteBlockFun, Blocks),
+    file:del_dir(PieceDir),
+    ok.
 
 
 %% @doc

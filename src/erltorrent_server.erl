@@ -63,7 +63,7 @@
     last_piece_id                    :: integer(),
     pieces_hash                      :: binary(),
     % @todo maybe need to persist give up limit?
-    give_up_limit      = 5           :: integer() % Give up all downloading limit if pieces hash is invalid
+    give_up_limit      = 20          :: integer() % Give up all downloading limit if pieces hash is invalid
 }).
 
 % make start
@@ -154,6 +154,8 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+% @todo check if such file not exist in Mnesia before start downloading
+% @todo constantly delete file from Mnesia if it not exists in download folder anymore. Also check it on app start.
 handle_call({download, TorrentName}, _From, State = #state{pieces_peers = PiecesPeers}) ->
     % @todo need to scrap data from tracker and update state constantly
     File = filename:join(["torrents", TorrentName]),
@@ -315,6 +317,7 @@ handle_info(is_end, State = #state{file_name = FileName, downloading_pieces = Do
             ok;
         []    ->
             ok = erltorrent_helper:concat_file(FileName),
+            ok = erltorrent_helper:delete_downloaded_pieces(FileName),
             lager:info("File has been downloaded successfully!"),
             erltorrent_helper:do_exit(self(), completed)
     end,
