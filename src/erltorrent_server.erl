@@ -179,6 +179,7 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
     {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
     PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
+    lager:info("Peers list = ~p", [PeersIP]),
     lists:map(
         fun (Peer) ->
             erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())

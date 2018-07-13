@@ -46,7 +46,7 @@
     last_action                 :: integer() % Gregorian seconds when last packet was received
 }).
 
-% @todo išhardkodinti, nes visas failas gali būti mažesnis už šitą skaičių
+% @todo unhardcode because all piece can be smaller than this number
 -define(DEFAULT_REQUEST_LENGTH, 16384).
 
 
@@ -127,29 +127,6 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-%% @todo move to handle_info
-%%
-handle_cast(request_piece, State) ->
-    #state{
-        socket       = Socket,
-        piece_id     = PieceId,
-        piece_length = PieceLength,
-        count        = Count,
-        hash         = Hash
-    } = State,
-    {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
-    % Check if file isn't downloaded yet
-    case NextLength > 0 of
-        true ->
-            ok = erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength),
-            ok = erltorrent_helper:get_packet(Socket);
-        false ->
-            % @todo need to send end game message
-            erltorrent_store:mark_piece_completed(Hash, PieceId),
-            erltorrent_helper:do_exit(self(), completed)
-    end,
-    {noreply, State};
-
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -175,17 +152,49 @@ handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerI
     {noreply, State#state{socket = Socket, parser_pid = ParserPid}};
 
 %% @doc
-%% Handle incoming packets.
+%% Request for a next piece from peer
+%% @todo need a test
+handle_info(request_piece, State) ->
+    #state{
+        socket       = Socket,
+        piece_id     = PieceId,
+        piece_length = PieceLength,
+        count        = Count,
+        hash         = Hash
+    } = State,
+    {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
+    % Check if file isn't downloaded yet
+    case NextLength > 0 of
+        true ->
+            ok = erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength),
+            ok = erltorrent_helper:get_packet(Socket);
+        false ->
+            % @todo need to send end game message
+            erltorrent_store:mark_piece_completed(Hash, PieceId),
+            erltorrent_helper:do_exit(self(), completed)
+    end,
+    {noreply, State};
+
+%% @doc
+%% If `unchoke` tries limit exceeded - kill that process
 %%
+handle_info({tcp, _Port, _Packet}, State = #state{give_up_limit = 0}) ->
+    erltorrent_helper:do_exit(self(), gave_up),
+    {noreply, State};
+
+%% @doc
+%% Handle incoming packets.
+%% @todo need a test
 handle_info({tcp, _Port, Packet}, State) ->
     #state{
-        piece_id    = PieceId,
-        torrent_id  = TorrentId,
-        count       = Count,
-        parser_pid  = ParserPid,
-        socket      = Socket,
-        peer_state  = PeerState,
-        hash        = Hash
+        piece_id        = PieceId,
+        torrent_id      = TorrentId,
+        count           = Count,
+        parser_pid      = ParserPid,
+        socket          = Socket,
+        peer_state      = PeerState,
+        hash            = Hash,
+        give_up_limit   = GiveUpLimit
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
@@ -193,7 +202,6 @@ handle_info({tcp, _Port, Packet}, State) ->
         _    -> ok
     end,
     % Identify new my peer state
-    % @todo implement unchoke waiting giveup
     NewPeerState = lists:foldl(
         fun
             ({unchoke, true}, _Acc) -> unchoke;
@@ -205,8 +213,11 @@ handle_info({tcp, _Port, Packet}, State) ->
     ),
     % If my peer state changed and new my peer state is unchoke, request for a piece
     ok = case {NewPeerState =:= PeerState, NewPeerState} of
-        {false, unchoke} -> request_piece();
-        _                -> ok
+        {false, unchoke} ->
+            self() ! request_piece,
+            ok;
+        _                ->
+            ok
     end,
     % We need to loop because we can receive more than 1 piece at the same time
     WriteFun = fun
@@ -220,22 +231,28 @@ handle_info({tcp, _Port, Packet}, State) ->
            false
     end,
     % Check current my peer state. If it's unchoke - request for piece. If it's choke - try to get unchoke by sending interested.
-    NewCount = case NewPeerState of
+    {NewCount, NewGiveUpLimit} = case NewPeerState of
         unchoke ->
             case lists:filtermap(WriteFun, Data) of
                 [_|_]   ->
-                    request_piece(),                      % If we have received any piece, go to another one
-                    erltorrent_store:read_piece(Hash, PieceId, update);
+                    self() ! request_piece, % If we have received any piece, go to another one
+                    {erltorrent_store:read_piece(Hash, PieceId, update), GiveUpLimit};
                 _       ->
                     erltorrent_helper:get_packet(Socket), % If we haven't received any piece, take more from socket
-                    Count
+                    {Count, GiveUpLimit}
             end;
         choke ->
             ok = erltorrent_message:interested(Socket),
             ok = erltorrent_helper:get_packet(Socket),
-            Count
+            {Count, GiveUpLimit - 1}
     end,
-    {noreply, State#state{count = NewCount, peer_state = NewPeerState, last_action = calendar:datetime_to_gregorian_seconds(calendar:local_time())}};
+    NewState = State#state{
+        count           = NewCount,
+        peer_state      = NewPeerState,
+        last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+        give_up_limit   = NewGiveUpLimit
+    },
+    {noreply, NewState};
 
 %% @doc
 %% Check is peer still alive every 15 seconds. If not - kill the process.
@@ -311,13 +328,6 @@ get_request_data(Count, PieceLength) ->
         false -> PieceLength - OffsetInt
     end,
     {ok, {NextLength, OffsetBin}}.
-
-
-%% @doc
-%% Start parsing data (sync. call)
-%%
-request_piece() ->
-    gen_server:cast(self(), request_piece).
 
 
 
