@@ -9,7 +9,9 @@
     piece_id    :: integer(),
     count       :: integer(),
     status      :: downloading | completed,
-    started     :: integer(), % When piece downloading started in milliseconds timestamp
+    % @todo maybe don't need
+    started_at  :: integer(), % When piece downloading started in milliseconds timestamp
+    % @todo maybe don't need
     updated_at  :: integer()  % When last update took place in milliseconds timestamp
 }).
 

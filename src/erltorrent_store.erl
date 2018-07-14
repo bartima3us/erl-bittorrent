@@ -97,12 +97,12 @@ read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= upda
                 end;
             []       ->
                 Piece = #erltorrent_store_piece{
-                    id        = os:timestamp(),
-                    hash      = Hash,
-                    piece_id  = PieceId,
-                    count     = 0,
-                    status    = downloading,
-                    started   = erltorrent_helper:get_milliseconds_timestamp()
+                    id          = os:timestamp(),
+                    hash        = Hash,
+                    piece_id    = PieceId,
+                    count       = 0,
+                    status      = downloading,
+                    started_at  = erltorrent_helper:get_milliseconds_timestamp()
                 },
                 mnesia:write(Piece),
                 0
@@ -135,7 +135,7 @@ mark_piece_new(Hash, PieceId) ->
         [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
         UpdatedPiece = Result#erltorrent_store_piece{
             count       = 0,
-            started     = erltorrent_helper:get_milliseconds_timestamp(),
+            started_at  = erltorrent_helper:get_milliseconds_timestamp(),
             updated_at  = undefined
         },
         mnesia:write(erltorrent_store_piece, UpdatedPiece, write)

@@ -36,7 +36,7 @@
     socket                      :: port(),
     piece_id                    :: binary(),
     piece_length                :: integer(), % Full length of piece
-    count                       :: integer(),
+    count                       :: integer(), % Number of downloaded blocks
     parser_pid                  :: pid(),
     server_pid                  :: pid(),
     peer_state      = choke     :: choke | unchoke,
@@ -44,7 +44,9 @@
     peer_id                     :: binary(),
     hash                        :: binary(),
     last_action                 :: integer(), % Gregorian seconds when last packet was received
-    piece_hash                  :: binary()   % Piece confirm hash from torrent file
+    piece_hash                  :: binary(),  % Piece confirm hash from torrent file
+    started_at                  :: integer(), % When piece downloading started in milliseconds timestamp
+    updated_at                  :: integer()  % When last update took place in milliseconds timestamp
 }).
 
 % @todo unhardcode because all piece can be smaller than this number
@@ -94,7 +96,8 @@ init([TorrentId, PieceId, PeerIp, Port, ServerPid, PeerId, Hash, PieceLength, Pi
         piece_length    = PieceLength,
         last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
         count           = erltorrent_store:read_piece(Hash, PieceId, read),
-        piece_hash      = PieceHash
+        piece_hash      = PieceHash,
+        started_at      = erltorrent_helper:get_milliseconds_timestamp()
     },
     self() ! start,
     {ok, State}.
@@ -164,7 +167,9 @@ handle_info(request_piece, State) ->
         piece_length = PieceLength,
         count        = Count,
         hash         = Hash,
-        piece_hash   = PieceHash
+        piece_hash   = PieceHash,
+        started_at   = StartedAt,
+        updated_at   = UpdatedAt
     } = State,
     {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
     % Check if file isn't downloaded yet
@@ -177,7 +182,7 @@ handle_info(request_piece, State) ->
             case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
-                    true = erltorrent_helper:do_exit(self(), completed);
+                    true = erltorrent_helper:do_exit(self(), {completed, Count, UpdatedAt - StartedAt});
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId),
                     ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
@@ -205,7 +210,8 @@ handle_info({tcp, _Port, Packet}, State) ->
         socket          = Socket,
         peer_state      = PeerState,
         hash            = Hash,
-        give_up_limit   = GiveUpLimit
+        give_up_limit   = GiveUpLimit,
+        updated_at      = UpdatedAt
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
@@ -242,26 +248,27 @@ handle_info({tcp, _Port, Packet}, State) ->
            false
     end,
     % Check current my peer state. If it's unchoke - request for piece. If it's choke - try to get unchoke by sending interested.
-    {NewCount, NewGiveUpLimit} = case NewPeerState of
+    {NewCount, NewGiveUpLimit, NewUpdatedAt} = case NewPeerState of
         unchoke ->
             case lists:filtermap(WriteFun, Data) of
                 [_|_]   ->
                     self() ! request_piece, % If we have received any piece, go to another one
-                    {erltorrent_store:read_piece(Hash, PieceId, update), GiveUpLimit};
+                    {erltorrent_store:read_piece(Hash, PieceId, update), GiveUpLimit, erltorrent_helper:get_milliseconds_timestamp()};
                 _       ->
                     erltorrent_helper:get_packet(Socket), % If we haven't received any piece, take more from socket
-                    {Count, GiveUpLimit}
+                    {Count, GiveUpLimit, UpdatedAt}
             end;
         choke ->
             ok = erltorrent_message:interested(Socket),
             ok = erltorrent_helper:get_packet(Socket),
-            {Count, GiveUpLimit - 1}
+            {Count, GiveUpLimit - 1, UpdatedAt}
     end,
     NewState = State#state{
         count           = NewCount,
         peer_state      = NewPeerState,
         last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
-        give_up_limit   = NewGiveUpLimit
+        give_up_limit   = NewGiveUpLimit,
+        updated_at      = NewUpdatedAt
     },
     {noreply, NewState};
 
@@ -324,7 +331,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Connect to peer
 %%
 do_connect(PeerIp, Port) ->
-    {ok, _Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 10000).
+    {ok, _Socket} = gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 1000).
 
 
 %% @doc
@@ -416,13 +423,15 @@ request_piece_test_() ->
                 State = #state{
                     piece_length = 100000,
                     count        = 7,
-                    piece_hash   = <<163,87,117,131,175,37,165,111,6,9,63,88,101,126,235,79,238,138,19,154>>
+                    piece_hash   = <<163,87,117,131,175,37,165,111,6,9,63,88,101,126,235,79,238,138,19,154>>,
+                    started_at   = 5,
+                    updated_at   = 10
                 },
                 {noreply, State} = handle_info(request_piece, State),
                 1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
                 1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
                 1 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
-                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', completed]),
+                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', {completed, '_', '_'}]),
                 0 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
                 0 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
                 0 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
@@ -434,13 +443,15 @@ request_piece_test_() ->
                 State = #state{
                     piece_length = 100000,
                     count        = 7,
-                    piece_hash   = <<45,45,32,11,65,34,87>>
+                    piece_hash   = <<45,45,32,11,65,34,87>>,
+                    started_at   = 5,
+                    updated_at   = 10
                 },
                 {noreply, State} = handle_info(request_piece, State),
                 1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
                 1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
                 1 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
-                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', completed]),
+                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', {completed, '_', '_'}]),
                 1 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
                 1 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
                 1 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
