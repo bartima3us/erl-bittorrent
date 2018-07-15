@@ -7,7 +7,7 @@ Currently only for downloading. There is no any possibility to share downloaded 
 
 Tested on Lithuanian trackers "Linkomanija" and "Torrent.lt".
 
-Tested on Erlang/OTP 18, Erlang/OTP 19, Erlang/OTP 20.
+Works only on Erlang/OTP 20 or newer.
 
 ## Compile and start
 ```
