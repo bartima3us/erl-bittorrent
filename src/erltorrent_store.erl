@@ -84,7 +84,7 @@ read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= upda
             [Result = #erltorrent_store_piece{count = Count}] ->
                 case SubAction of
                     read   ->
-                        Count;
+                        Result;
                     update ->
                         NewCount = Count + 1,
                         UpdatedPiece = Result#erltorrent_store_piece{
@@ -93,7 +93,7 @@ read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= upda
                         },
                         % @todo solve error after download restarting
                         mnesia:write(erltorrent_store_piece, UpdatedPiece, write),
-                        NewCount
+                        UpdatedPiece
                 end;
             []       ->
                 Piece = #erltorrent_store_piece{
@@ -105,7 +105,7 @@ read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= upda
                     started_at  = erltorrent_helper:get_milliseconds_timestamp()
                 },
                 mnesia:write(Piece),
-                0
+                Piece
         end
     end,
     {atomic, Result} = mnesia:transaction(Fun),

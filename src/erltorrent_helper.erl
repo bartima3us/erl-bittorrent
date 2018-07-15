@@ -23,7 +23,8 @@
     int_piece_id_to_bin/1,
     do_exit/2,
     do_monitor/2,
-    get_milliseconds_timestamp/0
+    get_milliseconds_timestamp/0,
+    shuffle_list/1
 ]).
 
 % Debug functions
@@ -256,6 +257,13 @@ do_monitor(Type, Pid) ->
 get_milliseconds_timestamp() ->
     {Mega, Sec, Micro} = os:timestamp(),
     (Mega * 1000000 + Sec) * 1000 + round(Micro / 1000).
+
+
+%% @doc
+%% Shuffle list elements in random order
+%%
+shuffle_list(List) ->
+    [ X || {_, X} <- lists:sort([{random:uniform(), N} || N <- List]) ].
 
 
 
