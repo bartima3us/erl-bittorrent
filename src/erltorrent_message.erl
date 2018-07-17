@@ -15,7 +15,8 @@
     handshake/3,
     interested/1,
     keep_alive/1,
-    request_piece/4
+    request_piece/4,
+    cancel/4
 ]).
 
 
@@ -61,6 +62,27 @@ request_piece(Socket, PieceId, PieceBegin, PieceLength) when is_binary(PieceId) 
         <<
             00, 00, 00, 16#0d,      % Message length
             06,                     % Message type
+            PieceId/binary,         % Piece index
+            PieceBegin/binary,      % Begin offset of piece
+            PieceLengthBin/binary   % Piece length
+        >>
+    ).
+
+
+%% @doc
+%% Send `cancel` message
+%%
+cancel(Socket, PieceId, PieceBegin, PieceLength) when is_integer(PieceId) ->
+    PieceIdBin = erltorrent_helper:int_piece_id_to_bin(PieceId),
+    cancel(Socket, PieceIdBin, PieceBegin, PieceLength);
+
+cancel(Socket, PieceId, PieceBegin, PieceLength) when is_binary(PieceId) ->
+    PieceLengthBin = <<PieceLength:32>>,
+    ok = gen_tcp:send(
+        Socket,
+        <<
+            00, 00, 00, 16#0d,      % Message length
+            08,                     % Message type
             PieceId/binary,         % Piece index
             PieceBegin/binary,      % Begin offset of piece
             PieceLengthBin/binary   % Piece length

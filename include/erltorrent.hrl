@@ -15,3 +15,11 @@
     payload :: payload(), % @todo maybe don't need
     length  :: binary()   % 4 bytes % @todo maybe don't need
 }).
+
+-record(piece, {
+    piece_id                            :: binary(),
+    piece_length                        :: integer(), % Full length of piece
+    count                               :: integer(), % Number of downloaded blocks
+    piece_hash                          :: binary(),  % Piece confirm hash from torrent file
+    status = not_requested              :: requested | not_requested
+}).
