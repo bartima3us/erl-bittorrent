@@ -179,7 +179,6 @@ handle_info(request_piece, State) ->
         [_|_] -> ok;
         []    -> erltorrent_helper:do_exit(self(), {full_complete, {Ip, Port}})
     end,
-    ShortenPieceData = lists:sublist(erltorrent_helper:shuffle_list(PieceData), 5),
     %
     % If not, make requests for pieces
     UpdatedPieceData = lists:filter(
@@ -215,7 +214,7 @@ handle_info(request_piece, State) ->
             (_Piece = #piece{status = requested}) ->
                 true
         end,
-        ShortenPieceData
+        PieceData
     ),
     {noreply, State#state{piece_data = UpdatedPieceData}};
 
