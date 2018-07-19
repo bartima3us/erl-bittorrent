@@ -364,8 +364,8 @@ handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers
 handle_info(is_end, State = #state{pieces_peers = PiecesPeers, file_name = FileName, downloading_pieces = DownloadingPieces, end_game = EndGame}) ->
     case dict:is_empty(PiecesPeers) of
         true ->
-            ok = erltorrent_helper:concat_file(FileName),
-            ok = erltorrent_helper:delete_downloaded_pieces(FileName),
+%%            ok = erltorrent_helper:concat_file(FileName),
+%%            ok = erltorrent_helper:delete_downloaded_pieces(FileName),
             lager:info("File has been downloaded successfully!"),
             erltorrent_helper:do_exit(self(), completed);
         false ->
@@ -419,6 +419,32 @@ handle_info({completed, PieceId, From}, State = #state{pieces_peers = PiecesPeer
         end,
         PiecePeers
     ),
+%%    case dict:is_key(PieceId, PiecesPeers) of
+%%        true ->
+%%            PiecePeers = dict:fetch(PieceId, PiecesPeers),
+%%            lists:map(
+%%                fun (Peer) ->
+%%                    case lists:keysearch({PieceId, Peer}, #downloading_piece.key, DownloadingPieces) of
+%%                        {value, #downloading_piece{pid = Pid}} ->
+%%                            Pid ! {completed, PieceId};
+%%                        false ->
+%%                            ok
+%%                    end
+%%                end,
+%%                PiecePeers
+%%            );
+%%        false ->
+%%            ok
+%%    end,
+%%    NewDownloadingPieces = lists:map(
+%%        fun
+%%            (#downloading_piece{piece_id = IteratingPieceId}) when PieceId =:= IteratingPieceId ->
+%%                #downloading_piece{piece_id = PieceId, status = completed};
+%%            (Other) ->
+%%                Other
+%%        end,
+%%        DownloadingPieces
+%%    ),
     NewDownloadingPieces = lists:keyreplace(PieceId, #downloading_piece.piece_id, DownloadingPieces, #downloading_piece{piece_id = PieceId, status = completed}),
     check_is_end(State),
     {noreply, State#state{downloading_pieces = NewDownloadingPieces}};
@@ -462,6 +488,7 @@ handle_info({'DOWN', MonitorRef, process, _Pid, {full_complete, IpPort}}, State 
         end,
         PiecesPeers
     ),
+    lager:info("Full complete. Ip=~p", [IpPort]),
     {noreply, State#state{pieces_peers = NewPiecesPeers, peers = NewPeers, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
 
 %% @doc
