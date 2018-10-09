@@ -59,8 +59,8 @@
 
 -record(state, {
     file_name                        :: string(),
-    pieces_peers       = dict:new()  :: dict:type(),
-    peers              = dict:new()  :: dict:type(),
+    piece_peers        = dict:new()  :: dict:type(), % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
+    peer_pieces        = dict:new()  :: dict:type(), % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
     downloading_pieces = []          :: [#downloading_piece{}],
     downloading_peers  = []          :: list(),
     pieces_amount                    :: integer(),
@@ -179,7 +179,7 @@ init([]) ->
 %%--------------------------------------------------------------------
 % @todo check if such file not exist in Mnesia before start downloading
 % @todo constantly delete file from Mnesia if it not exists in download folder anymore. Also check it on app start.
-handle_call({download, TorrentName}, _From, State = #state{pieces_peers = PiecesPeers}) ->
+handle_call({download, TorrentName}, _From, State = #state{piece_peers = PiecePeers}) ->
     % @todo need to scrap data from tracker and update state constantly
     File = filename:join(["torrents", TorrentName]),
     {ok, Bin} = file:read_file(File),
@@ -216,11 +216,11 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
     LastPieceId = PiecesAmount - 1,
     % Fill empty pieces peers and downloading pieces
     IdsList = lists:seq(0, LastPieceId),
-    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecesPeers, IdsList),
+    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
     NewState = State#state{
         file_name           = FileName,
         pieces_amount       = PiecesAmount,
-        pieces_peers        = NewPiecesPeers,
+        piece_peers         = NewPiecesPeers,
         peer_id             = PeerId,
         hash                = HashBinString,
         piece_length        = PieceSize,
@@ -234,7 +234,7 @@ handle_call({download, TorrentName}, _From, State = #state{pieces_peers = Pieces
 %% @doc
 %% Handle piece peers call
 %%
-handle_call({piece_peers, Id}, _From, State = #state{pieces_peers = PiecesPeers}) ->
+handle_call({piece_peers, Id}, _From, State = #state{piece_peers = PiecesPeers}) ->
     Result = case dict:is_key(Id, PiecesPeers) of
         true  -> dict:fetch(Id, PiecesPeers);
         false -> {error, piece_id_not_exist}
@@ -304,22 +304,22 @@ handle_info(_Message, State = #state{give_up_limit = 0}) ->
 %% @doc
 %% Handle async bitfield message from peer and assign new peers if needed
 %%
-handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = PiecesPeers, peers = Peers}) ->
+handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{piece_peers = PiecePeers, peer_pieces = PeerPieces}) ->
     %
-    % Peers
+    % Peer pieces
     Ids = lists:filtermap(
         fun
-            ({Id, true}) -> {true, Id};
+            ({Id, true})   -> {true, Id};
             ({_Id, false}) -> false
         end,
         ParsedBitfield
     ),
-    NewPeers = case dict:is_key({Ip, Port}, Peers) of
-        true  -> dict:append_list({Ip, Port}, Ids, Peers);
-        false -> dict:store({Ip, Port}, Ids, Peers)
+    NewPeerPieces = case dict:is_key({Ip, Port}, PeerPieces) of
+        true  -> dict:append_list({Ip, Port}, Ids, PeerPieces);
+        false -> dict:store({Ip, Port}, Ids, PeerPieces)
     end,
     %
-    % Pieces peers
+    % Piece peers
     NewPiecesPeers = dict:map(
         fun (Id, Peers) ->
             % Check if this IP has an iterating piece
@@ -334,35 +334,35 @@ handle_info({bitfield, ParsedBitfield, Ip, Port}, State = #state{pieces_peers = 
                     Peers
             end
         end,
-        PiecesPeers
+        PiecePeers
     ),
-    {noreply, State#state{pieces_peers = NewPiecesPeers, peers = NewPeers}};
+    {noreply, State#state{piece_peers = NewPiecesPeers, peer_pieces = NewPeerPieces}};
 
 %% @doc
 %% Handle async have message from peer and assign new peers if needed
 %%
-handle_info({have, PieceId, Ip, Port}, State = #state{pieces_peers = PiecesPeers, peers = Peers}) ->
+handle_info({have, PieceId, Ip, Port}, State = #state{piece_peers = PiecePeers, peer_pieces = PeerPieces}) ->
     %
-    % Peers
-    NewPeers = case dict:is_key({Ip, Port}, Peers) of
-        true  -> dict:append({Ip, Port}, PieceId, Peers);
-        false -> dict:store({Ip, Port}, PieceId, Peers)
+    % Peer pieces
+    NewPeerPieces = case dict:is_key({Ip, Port}, PeerPieces) of
+        true  -> dict:append({Ip, Port}, PieceId, PeerPieces);
+        false -> dict:store({Ip, Port}, PieceId, PeerPieces)
     end,
     %
-    % Pieces peers
-    PiecePeers = dict:fetch(PieceId, PiecesPeers),
-    NewPiecePeers = case lists:member({Ip, Port}, PiecePeers) of
-        false -> [{Ip, Port}|PiecePeers];
-        true  -> PiecePeers
+    % Piece peers
+    Peers = dict:fetch(PieceId, PiecePeers),
+    NewPeers = case lists:member({Ip, Port}, Peers) of
+        false -> [{Ip, Port}|Peers];
+        true  -> Peers
     end,
-    NewPiecesPeers = dict:store(PieceId, NewPiecePeers, PiecesPeers),
-    {noreply, State#state{pieces_peers = NewPiecesPeers, peers = NewPeers}};
+    NewPiecePeers = dict:store(PieceId, NewPeers, PiecePeers),
+    {noreply, State#state{piece_peers = NewPiecePeers, peer_pieces = NewPeerPieces}};
 
 %% @doc
 %% Async check is end
 %%
-handle_info(is_end, State = #state{pieces_peers = PiecesPeers, file_name = FileName, downloading_pieces = DownloadingPieces, end_game = EndGame}) ->
-    case dict:is_empty(PiecesPeers) of
+handle_info(is_end, State = #state{piece_peers = PiecePeers, file_name = FileName, downloading_pieces = DownloadingPieces, end_game = EndGame}) ->
+    case dict:is_empty(PiecePeers) of
         true ->
             ok = erltorrent_helper:concat_file(FileName),
             ok = erltorrent_helper:delete_downloaded_pieces(FileName),
@@ -406,8 +406,8 @@ handle_info(assign_peers, State = #state{}) ->
 %% @doc
 %% Remove process from downloading pieces if it completes downloading.
 %%
-handle_info({completed, PieceId, From}, State = #state{pieces_peers = PiecesPeers, downloading_pieces  = DownloadingPieces}) ->
-    PiecePeers = dict:fetch(PieceId, PiecesPeers),
+handle_info({completed, PieceId, From}, State = #state{piece_peers = PiecePeers, downloading_pieces  = DownloadingPieces}) ->
+    Peers = dict:fetch(PieceId, PiecePeers),
     lists:map(
         fun (Peer) ->
             case lists:keysearch({PieceId, Peer}, #downloading_piece.key, DownloadingPieces) of
@@ -417,7 +417,7 @@ handle_info({completed, PieceId, From}, State = #state{pieces_peers = PiecesPeer
                     ok
             end
         end,
-        PiecePeers
+        Peers
     ),
     NewDownloadingPieces = lists:keyreplace(PieceId, #downloading_piece.piece_id, DownloadingPieces, #downloading_piece{piece_id = PieceId, status = completed}),
     check_is_end(State),
@@ -426,8 +426,8 @@ handle_info({completed, PieceId, From}, State = #state{pieces_peers = PiecesPeer
 %% @doc
 %% Remove process from downloading pieces if it completes downloading.
 %%
-handle_info({continue, PieceId, Count, UpdatedCount}, State = #state{pieces_peers = PiecesPeers, downloading_pieces  = DownloadingPieces}) ->
-    PiecePeers = dict:fetch(PieceId, PiecesPeers),
+handle_info({continue, PieceId, Count, UpdatedCount}, State = #state{piece_peers = PiecePeers, downloading_pieces  = DownloadingPieces}) ->
+    Peers = dict:fetch(PieceId, PiecePeers),
     lists:map(
         fun (Peer) ->
             case lists:keysearch({PieceId, Peer}, #downloading_piece.key, DownloadingPieces) of
@@ -437,7 +437,7 @@ handle_info({continue, PieceId, Count, UpdatedCount}, State = #state{pieces_peer
                     ok
             end
         end,
-        PiecePeers
+        Peers
     ),
     {noreply, State};
 
@@ -454,24 +454,24 @@ handle_info({continue, PieceId, Count, UpdatedCount}, State = #state{pieces_peer
 %%    NewPeers = lists:sort(lists:keyreplace(IpPort, #peer.ip_port, Peers, Peer#peer{rating = undefined, count_blocks = 0, time = 0})),
 %%    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers, give_up_limit = NewGiveUpLimit, peers = NewPeers}};
 
-handle_info({'DOWN', MonitorRef, process, _Pid, {full_complete, IpPort}}, State = #state{pieces_peers = PiecesPeers, peers = Peers, downloading_peers = DownloadingPeers}) ->
-    {Pieces, NewPeers} = dict:take(IpPort, Peers),
+handle_info({'DOWN', MonitorRef, process, _Pid, {full_complete, IpPort}}, State = #state{piece_peers = PiecePeers, peer_pieces = PeerPieces, downloading_peers = DownloadingPeers}) ->
+    {Pieces, NewPeers} = dict:take(IpPort, PeerPieces),
     NewPiecesPeers = dict:filter(
         fun (Id, _) ->
             not(lists:member(Id, Pieces))
         end,
-        PiecesPeers
+        PiecePeers
     ),
-    {noreply, State#state{pieces_peers = NewPiecesPeers, peers = NewPeers, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
+    {noreply, State#state{piece_peers = NewPiecesPeers, peer_pieces = NewPeers, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
 
 %% @doc
 %% Remove process from downloading pieces if it crashes. Move that peer into end of queue.
 %%
-handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, peers = Peers, downloading_peers = DownloadingPeers}) ->
+handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, peer_pieces = PeerPieces, downloading_peers = DownloadingPeers}) ->
     {value, #downloading_piece{key = {_, IpPort}}} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
-    {_, NewPeers} = dict:take(IpPort, Peers),
+    {_, NewPeerPieces} = dict:take(IpPort, PeerPieces),
 %%    {NewDownloadingPieces, NewPiecesPeers} = update_state_after_invalid_piece(MonitorRef, DownloadingPieces, PiecesPeers),
-    {noreply, State#state{peers = NewPeers, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
+    {noreply, State#state{peer_pieces = NewPeerPieces, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
 
 %% @doc
 %% Unknown messages
@@ -650,9 +650,9 @@ count_downloading(DownloadingPieces) ->
 %% @doc
 %% Assign free peers to download pieces
 %%
-assign_peers(State = #state{peers = Peers, downloading_peers = DownloadingPeers}) ->
-    PeersList = dict:to_list(Peers),
-    assign_peers(PeersList, DownloadingPeers, State).
+assign_peers(State = #state{peer_pieces = PeerPieces, downloading_peers = DownloadingPeers}) ->
+    PeerPiecesList = dict:to_list(PeerPieces),
+    assign_peers(PeerPiecesList, DownloadingPeers, State).
 
 assign_peers([], _DownloadingPeers, State) ->
     State;
@@ -809,25 +809,25 @@ add_new_peer_to_pieces_peers_test_() ->
     Ip = {127,0,0,1},
     Port = 9444,
     ParsedBitfield = [{0, true}, {1, false}, {2, true}, {3, true}],
-    PiecesPeers1 = dict:store(0, [], dict:new()),
-    PiecesPeers2 = dict:store(1, [{{127,0,0,2}, 9874}], PiecesPeers1),
-    PiecesPeers3 = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecesPeers2),
-    PiecesPeers4 = dict:store(3, [{Ip, Port}], PiecesPeers3),
-    PiecesPeers5 = dict:store(0, [{Ip, Port}], PiecesPeers4),
-    PiecesPeers6 = dict:store(2, [{Ip, Port}, {{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecesPeers5),
-    PiecesPeers7 = dict:store(3, [{Ip, Port}], PiecesPeers6),
-    State = #state{pieces_peers = PiecesPeers4, downloading_pieces = [], pieces_amount = 100},
+    PiecePeers1 = dict:store(0, [], dict:new()),
+    PiecePeers2 = dict:store(1, [{{127,0,0,2}, 9874}], PiecePeers1),
+    PiecePeers3 = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecePeers2),
+    PiecePeers4 = dict:store(3, [{Ip, Port}], PiecePeers3),
+    PiecePeers5 = dict:store(0, [{Ip, Port}], PiecePeers4),
+    PiecePeers6 = dict:store(2, [{Ip, Port}, {{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecePeers5),
+    PiecePeers7 = dict:store(3, [{Ip, Port}], PiecePeers6),
+    State = #state{piece_peers = PiecePeers4, downloading_pieces = [], pieces_amount = 100},
     [
         ?_assertEqual(
-            {noreply, #state{pieces_peers = PiecesPeers7, downloading_pieces = [], pieces_amount = 100}},
+            {noreply, #state{piece_peers = PiecePeers7, downloading_pieces = [], pieces_amount = 100}},
             handle_info({bitfield, ParsedBitfield, Ip, Port}, State)
         ),
         ?_assertEqual(
-            {noreply, #state{pieces_peers = PiecesPeers4, downloading_pieces = [], pieces_amount = 100}},
+            {noreply, #state{piece_peers = PiecePeers4, downloading_pieces = [], pieces_amount = 100}},
             handle_info({have, 3, Ip, Port}, State)
         ),
         ?_assertEqual(
-            {noreply, #state{pieces_peers = PiecesPeers5, downloading_pieces = [], pieces_amount = 100}},
+            {noreply, #state{piece_peers = PiecePeers5, downloading_pieces = [], pieces_amount = 100}},
             handle_info({have, 0, Ip, Port}, State)
         )
     ].
