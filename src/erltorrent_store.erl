@@ -20,10 +20,10 @@
 -export([
     insert_file/2,
     read_file/1,
-    read_piece/3,
+    read_piece/5,
     read_pieces/1,
     mark_piece_completed/2,
-    mark_piece_new/2
+    mark_piece_new/3
 ]).
 
 -export([
@@ -78,17 +78,17 @@ read_pieces(Hash) ->
 %% @doc
 %% Get current piece state. Update it if needed.
 %%
-read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= update ->
+read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAction =:= read; SubAction =:= update ->
     Fun = fun() ->
         case mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}) of
-            [Result = #erltorrent_store_piece{count = Count}] ->
+            [Result = #erltorrent_store_piece{blocks = Blocks}] ->
                 case SubAction of
                     read   ->
                         Result;
                     update ->
-                        NewCount = Count + 1,
+                        NewBlocks = Blocks -- [DownloadedBlockId],
                         UpdatedPiece = Result#erltorrent_store_piece{
-                            count       = NewCount,
+                            blocks      = NewBlocks,
                             updated_at  = erltorrent_helper:get_milliseconds_timestamp()
                         },
                         % @todo solve error after download restarting
@@ -100,7 +100,7 @@ read_piece(Hash, PieceId, SubAction) when SubAction =:= read; SubAction =:= upda
                     id          = os:timestamp(),
                     hash        = Hash,
                     piece_id    = PieceId,
-                    count       = 0,
+                    blocks      = lists:seq(0, LastBlockId),
                     status      = downloading,
                     started_at  = erltorrent_helper:get_milliseconds_timestamp()
                 },
@@ -128,13 +128,13 @@ mark_piece_completed(Hash, PieceId) ->
 
 
 %% @doc
-%% Change piece count to 0.
+%% Change piece blocks to initial
 %%
-mark_piece_new(Hash, PieceId) ->
+mark_piece_new(Hash, PieceId, LastBlockId) ->
     Fun = fun() ->
         [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
         UpdatedPiece = Result#erltorrent_store_piece{
-            count       = 0,
+            blocks      = lists:seq(0, LastBlockId),
             started_at  = erltorrent_helper:get_milliseconds_timestamp(),
             updated_at  = undefined
         },

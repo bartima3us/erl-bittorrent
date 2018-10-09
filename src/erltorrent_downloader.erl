@@ -47,9 +47,6 @@
     updated_at                  :: integer()  % When last update took place in milliseconds timestamp
 }).
 
-% @todo unhardcode because all piece can be smaller than this number
--define(DEFAULT_REQUEST_LENGTH, 16384).
-
 
 %%%===================================================================
 %%% API
@@ -146,9 +143,9 @@ handle_cast(_Msg, State) ->
 handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerId, hash = Hash, piece_data = PieceData}) ->
     UpdatedPieceData = lists:map(
         fun
-            (Piece = #piece{piece_id = PieceId, status = not_requested}) ->
-                #erltorrent_store_piece{count = Count} = erltorrent_store:read_piece(Hash, PieceId, read),
-                Piece#piece{count = Count};
+            (Piece = #piece{piece_id = PieceId, last_block_id = LastBlockId, status = not_requested}) ->
+                #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, 0, read),
+                Piece#piece{blocks = Blocks};
             (Piece = #piece{status = requested}) ->
                 Piece
         end,
@@ -186,13 +183,14 @@ handle_info(request_piece, State) ->
         fun
             (Piece = #piece{status = not_requested}) ->
                 #piece{
-                    piece_id     = PieceId,
-                    piece_length = PieceLength,
-                    count        = Count,
-                    piece_hash   = PieceHash
+                    piece_id      = PieceId,
+                    piece_length  = PieceLength,
+                    last_block_id = LastBlockId,
+                    blocks        = [NextBlockId|_],
+                    piece_hash    = PieceHash
                 } = Piece,
 %%                lager:info("Request piece: ID=~p, Length=~p, Count=~p", [PieceId, PieceLength, Count]),
-                {ok, {NextLength, OffsetBin}} = get_request_data(Count, PieceLength),
+                {ok, {NextLength, OffsetBin}} = get_request_data(NextBlockId, PieceLength),
                 % Check if file isn't downloaded yet
                 case NextLength > 0 of
                     true ->
@@ -206,7 +204,7 @@ handle_info(request_piece, State) ->
                                 ServerPid ! {completed, PieceId, self()},
                                 false;
                             false ->
-                                ok = erltorrent_store:mark_piece_new(Hash, PieceId),
+                                ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
                                 ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
                                 ServerPid ! {invalid_hash, PieceId, {Ip, Port}, self()},
                                 false
@@ -266,8 +264,8 @@ handle_info({tcp, _Port, Packet}, State) ->
     WriteFun = fun
         ({piece, Piece = #piece_data{payload = Payload, piece_index = PieceId, block_offset = BlockOffset}}) ->
             <<PieceBegin:32>> = BlockOffset,
-            {value, #piece{count = WaitingCount}} = lists:keysearch(PieceId, #piece.piece_id, PieceData),
-            WaitingOffset = <<(?DEFAULT_REQUEST_LENGTH * WaitingCount):32>>,
+            {value, #piece{blocks = [WaitingBlockId|_]}} = lists:keysearch(PieceId, #piece.piece_id, PieceData),
+            WaitingOffset = <<(?DEFAULT_REQUEST_LENGTH * WaitingBlockId):32>>,
             case WaitingOffset =:= BlockOffset of
                 true  ->
                     FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".block"]),
@@ -286,12 +284,12 @@ handle_info({tcp, _Port, Packet}, State) ->
             case lists:filtermap(WriteFun, Data) of
                 ReceivedPieces = [_|_]  ->
                     lists:map(
-                        fun(Piece = #piece{piece_id = PieceId, count = Count}) ->
+                        fun(Piece = #piece{piece_id = PieceId, last_block_id = LastBlockId, blocks = [BlockId|_]}) ->
                             case lists:keysearch(PieceId, #piece_data.piece_index, ReceivedPieces) of
                                 {value, _Val} ->
-                                    #erltorrent_store_piece{count = UpdatedCount} = erltorrent_store:read_piece(Hash, PieceId, update),
-                                    ServerPid ! {continue, PieceId, Count, UpdatedCount}, % If we have received any piece, report to server
-                                    Piece#piece{count = UpdatedCount, status = not_requested};
+                                    #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, BlockId, update),
+                                    ServerPid ! {continue, PieceId, BlockId, UpdatedBlocks}, % If we have received any block, report to server
+                                    Piece#piece{blocks = UpdatedBlocks, status = not_requested};
                                 false ->
                                     Piece
                             end
@@ -317,12 +315,12 @@ handle_info({tcp, _Port, Packet}, State) ->
 %%
 %%
 %%
-handle_info({continue, PieceId, Count, UpdatedCount}, State = #state{socket = Socket, piece_data = PieceData}) ->
+handle_info({continue, PieceId, BlockId, UpdatedBlocks}, State = #state{socket = Socket, piece_data = PieceData}) ->
     NewState = case lists:keysearch(PieceId, #piece.piece_id, PieceData) of
         {value, Piece = #piece{piece_length = PieceLength}} ->
-            {ok, {Length, OffsetBin}} = get_request_data(Count, PieceLength),
+            {ok, {Length, OffsetBin}} = get_request_data(BlockId, PieceLength),
             erltorrent_message:cancel(Socket, PieceId, OffsetBin, Length),
-            UpdatedPieceData = lists:keyreplace(PieceId, #piece.piece_id, PieceData, Piece#piece{status = not_requested, count = UpdatedCount}),
+            UpdatedPieceData = lists:keyreplace(PieceId, #piece.piece_id, PieceData, Piece#piece{status = not_requested, blocks = UpdatedBlocks}),
             State#state{piece_data = UpdatedPieceData};
         false ->
             State
@@ -414,8 +412,8 @@ do_connect(PeerIp, Port) ->
 %% @doc
 %% Get increased `length` and `offset`
 %%
-get_request_data(Count, PieceLength) ->
-    OffsetBin = <<(?DEFAULT_REQUEST_LENGTH * Count):32>>,
+get_request_data(BlockId, PieceLength) ->
+    OffsetBin = <<(?DEFAULT_REQUEST_LENGTH * BlockId):32>>,
     <<OffsetInt:32>> = OffsetBin,
     % Last chunk of piece would be shorter than default length so we need to check if next chunk isn't a last
     NextLength = case (OffsetInt + ?DEFAULT_REQUEST_LENGTH) =< PieceLength of

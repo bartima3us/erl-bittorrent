@@ -681,6 +681,7 @@ assign_peers([{IpPort, Ids}|T], DownloadingPeers, State) ->
                     <<_:Exclude/binary, PieceHash:20/binary, _Rest/binary>> = PiecesHash,
                     #piece{
                         piece_id        = Id,
+                        last_block_id   = trunc(math:ceil(CurrentPieceLength / ?DEFAULT_REQUEST_LENGTH)),
                         piece_length    = CurrentPieceLength,
                         piece_hash      = PieceHash
                     }

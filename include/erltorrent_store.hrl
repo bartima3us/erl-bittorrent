@@ -7,7 +7,7 @@
     id                  :: tuple(),
     hash                :: binary(),
     piece_id            :: integer(),
-    count               :: integer(),
+    blocks              :: [integer()],
     status              :: downloading | completed,
     % @todo maybe don't need
     started_at          :: integer(), % When piece downloading started in milliseconds timestamp
