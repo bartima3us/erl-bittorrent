@@ -176,7 +176,6 @@ handle_info(request_piece, State) ->
         [_|_] -> ok;
         []    -> erltorrent_helper:do_exit(self(), {full_complete, {Ip, Port}})
     end,
-    ShortenPieceData = lists:sublist(erltorrent_helper:shuffle_list(PieceData), 5),
     %
     % If not, make requests for pieces
     UpdatedPieceData = lists:filter(
@@ -213,7 +212,7 @@ handle_info(request_piece, State) ->
             (_Piece = #piece{status = requested}) ->
                 true
         end,
-        ShortenPieceData
+        PieceData
     ),
     {noreply, State#state{piece_data = UpdatedPieceData}};
 
@@ -264,15 +263,19 @@ handle_info({tcp, _Port, Packet}, State) ->
     WriteFun = fun
         ({piece, Piece = #piece_data{payload = Payload, piece_index = PieceId, block_offset = BlockOffset}}) ->
             <<PieceBegin:32>> = BlockOffset,
-            {value, #piece{blocks = [WaitingBlockId|_]}} = lists:keysearch(PieceId, #piece.piece_id, PieceData),
-            WaitingOffset = <<(?DEFAULT_REQUEST_LENGTH * WaitingBlockId):32>>,
-            case WaitingOffset =:= BlockOffset of
-                true  ->
-                    FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".block"]),
-                    filelib:ensure_dir(FileName),
-                    file:write_file(FileName, Payload),
-                    {true, Piece};
-                false ->
+            case lists:keysearch(PieceId, #piece.piece_id, PieceData) of
+                {value, #piece{blocks = [WaitingBlockId|_]}} ->
+                    WaitingOffset = <<(?DEFAULT_REQUEST_LENGTH * WaitingBlockId):32>>,
+                    case WaitingOffset =:= BlockOffset of
+                        true  ->
+                            FileName = filename:join(["temp", TorrentId, integer_to_list(PieceId), integer_to_list(PieceBegin) ++ ".block"]),
+                            filelib:ensure_dir(FileName),
+                            file:write_file(FileName, Payload),
+                            {true, Piece};
+                        false ->
+                            false
+                    end;
+                _ ->
                     false
             end;
        (_Else) ->
@@ -284,15 +287,18 @@ handle_info({tcp, _Port, Packet}, State) ->
             case lists:filtermap(WriteFun, Data) of
                 ReceivedPieces = [_|_]  ->
                     lists:map(
-                        fun(Piece = #piece{piece_id = PieceId, last_block_id = LastBlockId, blocks = [BlockId|_]}) ->
-                            case lists:keysearch(PieceId, #piece_data.piece_index, ReceivedPieces) of
-                                {value, _Val} ->
-                                    #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, BlockId, update),
-                                    ServerPid ! {continue, PieceId, BlockId, UpdatedBlocks}, % If we have received any block, report to server
-                                    Piece#piece{blocks = UpdatedBlocks, status = not_requested};
-                                false ->
-                                    Piece
-                            end
+                        fun
+                            (Piece = #piece{piece_id = PieceId, last_block_id = LastBlockId, blocks = [BlockId|_]}) ->
+                                case lists:keysearch(PieceId, #piece_data.piece_index, ReceivedPieces) of
+                                    {value, _Val} ->
+                                        #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, BlockId, update),
+                                        ServerPid ! {continue, PieceId, BlockId, UpdatedBlocks}, % If we have received any piece, report to server
+                                        Piece#piece{blocks = UpdatedBlocks, status = not_requested};
+                                    false ->
+                                        Piece
+                                end;
+                            (_) ->
+                                false
                         end,
                         PieceData
                     );
@@ -421,6 +427,30 @@ get_request_data(BlockId, PieceLength) ->
         false -> PieceLength - OffsetInt
     end,
     {ok, {NextLength, OffsetBin}}.
+
+
+
+
+
+get_batch_request_data(Count, PieceLength) ->
+    Result = lists:filtermap(
+        fun (CountOffset) ->
+            RealCount = Count + CountOffset,
+            OffsetBin = <<(?DEFAULT_REQUEST_LENGTH * RealCount):32>>,
+            <<OffsetInt:32>> = OffsetBin,
+            % Last chunk of piece would be shorter than default length so we need to check if next chunk isn't a last
+            case (OffsetInt + ?DEFAULT_REQUEST_LENGTH) =< PieceLength of
+                true  ->
+                    {true, {?DEFAULT_REQUEST_LENGTH, OffsetBin}};
+                false -> case CountOffset of
+                    0 -> {true, {PieceLength - OffsetInt, OffsetBin}};
+                    _ -> false
+                end
+            end
+        end,
+        lists:seq(0, 4)
+    ),
+    {ok, Result}.
 
 
 %% @doc

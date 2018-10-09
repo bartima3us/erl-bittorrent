@@ -364,8 +364,8 @@ handle_info({have, PieceId, Ip, Port}, State = #state{piece_peers = PiecePeers, 
 handle_info(is_end, State = #state{piece_peers = PiecePeers, file_name = FileName, downloading_pieces = DownloadingPieces, end_game = EndGame}) ->
     case dict:is_empty(PiecePeers) of
         true ->
-            ok = erltorrent_helper:concat_file(FileName),
-            ok = erltorrent_helper:delete_downloaded_pieces(FileName),
+%%            ok = erltorrent_helper:concat_file(FileName),
+%%            ok = erltorrent_helper:delete_downloaded_pieces(FileName),
             lager:info("File has been downloaded successfully!"),
             erltorrent_helper:do_exit(self(), completed);
         false ->
