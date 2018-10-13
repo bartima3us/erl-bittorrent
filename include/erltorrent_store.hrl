@@ -15,6 +15,12 @@
     updated_at          :: integer()  % When last update took place in milliseconds timestamp
 }).
 
+%%-record(erltorrent_peer, {
+%%    id,
+%%    peer_ip,
+%%
+%%}).
+
 -record(erltorrent_store_meta, {
     key     :: schema_version,
     value   :: integer()

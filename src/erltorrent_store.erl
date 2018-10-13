@@ -100,7 +100,7 @@ read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAct
                     id          = os:timestamp(),
                     hash        = Hash,
                     piece_id    = PieceId,
-                    blocks      = lists:seq(0, LastBlockId),
+                    blocks      = lists:seq(0, LastBlockId - 1),
                     status      = downloading,
                     started_at  = erltorrent_helper:get_milliseconds_timestamp()
                 },
