@@ -163,38 +163,29 @@ handle_info(request_piece, State) ->
         piece_data   = PieceData
     } = State,
     #piece{
-        piece_id = PieceId,
-        blocks   = Blocks
-    } = PieceData,
-    %
-    % Maybe PieceData process downloaded all pieces?
-    % @todo ar labai bloga praktika kodo po šituo case neįdėt į šį case?
-    case Blocks of
-        [_|_] -> ok;
-        []    ->
-            ServerPid ! {full_complete, {Ip, Port}, PieceId, self()}
-    end,
-    %
-    % If not, make requests for pieces
-    #piece{
         piece_id      = PieceId,
         piece_length  = PieceLength,
         last_block_id = LastBlockId,
-        blocks        = [NextBlockId|_],
+        blocks        = Blocks,
         piece_hash    = PieceHash
     } = PieceData,
-    {ok, {NextLength, OffsetBin}} = get_request_data(NextBlockId, PieceLength),
-    % Check if file isn't downloaded yet
-    case NextLength > 0 of
-        true ->
+    %
+    % Maybe PieceData process downloaded all pieces?
+    case Blocks of
+        [NextBlockId | _] ->
+            % @todo make a request for 5 blocks at once (UPDATE: strange, it's not effective)
+            % If not, make requests for blocks
+            {ok, {NextLength, OffsetBin}} = get_request_data(NextBlockId, PieceLength),
             ok = erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength),
-            ok = erltorrent_helper:get_packet(Socket),
-            true;
-        false ->
+            erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, NextBlockId, erltorrent_helper:get_milliseconds_timestamp(), requested_at),
+            ok = erltorrent_helper:get_packet(Socket);
+        []    ->
+            %
+            % If yes, check a hash
             case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
-                    ServerPid ! {completed, PieceId, self()},
+                    ServerPid ! {completed, {Ip, Port}, PieceId, self()},
                     false;
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
@@ -217,6 +208,8 @@ handle_info({tcp, _Port, _Packet}, State = #state{give_up_limit = 0}) ->
 %% @todo need a test
 handle_info({tcp, _Port, Packet}, State) ->
     #state{
+        peer_ip         = Ip,
+        port            = Port,
         torrent_id      = TorrentId,
         parser_pid      = ParserPid,
         piece_data      = PieceData,
@@ -256,6 +249,7 @@ handle_info({tcp, _Port, Packet}, State) ->
             <<PieceBegin:32>> = BlockOffset,
             BlockId = trunc(PieceBegin / ?DEFAULT_REQUEST_LENGTH),
             erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
+            erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
             FileName = filename:join(["temp", TorrentId, integer_to_list(GotPieceId), integer_to_list(PieceBegin) ++ ".block"]),
             filelib:ensure_dir(FileName),
             file:write_file(FileName, Payload),

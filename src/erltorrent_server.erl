@@ -57,12 +57,19 @@
     status      = false :: false | downloading | completed
 }).
 
+-record(peer_power, {
+    ip_port             :: tuple(),
+    time                :: integer(), % The lower is the better! (Block1 received_at - requested_at) + ... + (BlockN received_at - requested_at)
+    blocks_count        :: integer()  % How many blocks have already downloaded
+}).
+
 -record(state, {
     file_name                        :: string(),
     piece_peers        = dict:new()  :: dict:type(), % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
     peer_pieces        = dict:new()  :: dict:type(), % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
     downloading_pieces = []          :: [#downloading_piece{}],
     downloading_peers  = []          :: list(),
+    peers_power                      :: [#peer_power{}],
     pieces_amount                    :: integer(),
     peer_id                          :: binary(),
     hash                             :: binary(),
@@ -94,7 +101,7 @@ download(TorrentName) when is_binary(TorrentName) ->
     download(binary_to_list(TorrentName));
 
 download(TorrentName) when is_list(TorrentName) ->
-    gen_server:call(?SERVER, {download, TorrentName}).
+    gen_server:cast(?SERVER, {download, TorrentName}).
 
 
 %% @doc
@@ -177,59 +184,8 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-% @todo check if such file not exist in Mnesia before start downloading
-% @todo constantly delete file from Mnesia if it not exists in download folder anymore. Also check it on app start.
-handle_call({download, TorrentName}, _From, State = #state{piece_peers = PiecePeers}) ->
-    % @todo need to scrap data from tracker and update state constantly
-    File = filename:join(["torrents", TorrentName]),
-    {ok, Bin} = file:read_file(File),
-    {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
-    {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
-    Pieces       = dict:fetch(<<"pieces">>, Info),
-    FullSize     = dict:fetch(<<"length">>, Info),
-    PieceSize    = dict:fetch(<<"piece length">>, Info),
-    TrackerLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
-    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
-    PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
-    BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
-    HashBinString = crypto:hash(sha, BencodedInfo),
-    Hash = erltorrent_helper:urlencode(HashBinString),
-    FileName = case erltorrent_store:read_file(HashBinString) of
-        false ->
-            FName = dict:fetch(<<"name">>, Info),
-            erltorrent_store:insert_file(HashBinString, FName),
-            FName;
-        #erltorrent_store_file{file_name = FName} ->
-            FName
-    end,
-    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
-    {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
-    PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
-    lager:info("Peers list = ~p", [PeersIP]),
-    lists:map(
-        fun (Peer) ->
-            erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())
-        end,
-        PeersIP
-    ),
-    LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
-    LastPieceId = PiecesAmount - 1,
-    % Fill empty pieces peers and downloading pieces
-    IdsList = lists:seq(0, LastPieceId),
-    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
-    NewState = State#state{
-        file_name           = FileName,
-        pieces_amount       = PiecesAmount,
-        piece_peers         = NewPiecesPeers,
-        peer_id             = PeerId,
-        hash                = HashBinString,
-        piece_length        = PieceSize,
-        last_piece_length   = LastPieceLength,
-        last_piece_id       = LastPieceId,
-        pieces_hash         = Pieces
-    },
-    erlang:send_after(5000, self(), assign_peers),
-    {reply, ok, NewState};
+handle_call(_Msg, _From, State) ->
+    {reply, ok, State};
 
 %% @doc
 %% Handle piece peers call
@@ -280,8 +236,60 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+% @todo check if such file not exist in Mnesia before start downloading
+% @todo constantly delete file from Mnesia if it not exists in download folder anymore. Also check it on app start.
+handle_cast({download, TorrentName}, State = #state{piece_peers = PiecePeers}) ->
+    % @todo need to scrap data from tracker and update state constantly
+    File = filename:join(["torrents", TorrentName]),
+    {ok, Bin} = file:read_file(File),
+    {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
+    {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
+    Pieces       = dict:fetch(<<"pieces">>, Info),
+    FullSize     = dict:fetch(<<"length">>, Info),
+    PieceSize    = dict:fetch(<<"piece length">>, Info),
+    TrackerLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
+    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
+    PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
+    BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
+    HashBinString = crypto:hash(sha, BencodedInfo),
+    Hash = erltorrent_helper:urlencode(HashBinString),
+    FileName = case erltorrent_store:read_file(HashBinString) of
+        false ->
+            FName = dict:fetch(<<"name">>, Info),
+            erltorrent_store:insert_file(HashBinString, FName),
+            FName;
+        #erltorrent_store_file{file_name = FName} ->
+            FName
+    end,
+    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
+    {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
+    PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
+    lager:info("Peers list = ~p", [PeersIP]),
+    % @todo simple one for one?
+    lists:map(
+        fun (Peer) ->
+            erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())
+        end,
+        PeersIP
+    ),
+    LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
+    LastPieceId = PiecesAmount - 1,
+    % Fill empty pieces peers and downloading pieces
+    IdsList = lists:seq(0, LastPieceId),
+    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
+    NewState = State#state{
+        file_name           = FileName,
+        pieces_amount       = PiecesAmount,
+        piece_peers         = NewPiecesPeers,
+        peer_id             = PeerId,
+        hash                = HashBinString,
+        piece_length        = PieceSize,
+        last_piece_length   = LastPieceLength,
+        last_piece_id       = LastPieceId,
+        pieces_hash         = Pieces
+    },
+    erlang:send_after(5000, self(), assign_peers),
+    {noreply, NewState}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -378,7 +386,7 @@ handle_info(is_end, State = #state{piece_peers = PiecePeers, file_name = FileNam
 %%
 handle_info(assign_peers, State = #state{}) ->
     NewState = assign_peers(State),
-    check_is_end(State),
+%%    check_is_end(State),
 %%    erlang:send_after(1000, self(), assign_peers),
     {noreply, NewState};
 
@@ -395,11 +403,24 @@ handle_info(assign_peers, State = #state{}) ->
 %%    NewPeers = lists:sort(lists:keyreplace(IpPort, #peer.ip_port, Peers, Peer#peer{rating = undefined, count_blocks = 0, time = 0})),
 %%    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers, give_up_limit = NewGiveUpLimit, peers = NewPeers}};
 
-handle_info({full_complete, IpPort, PieceId, DownloaderPid}, State = #state{piece_peers = PiecePeers, downloading_peers = DownloadingPeers}) ->
+handle_info({completed, IpPort, PieceId, DownloaderPid}, State = #state{hash = Hash, piece_peers = PiecePeers, downloading_peers = DownloadingPeers}) ->
     {_Peers, NewPiecePeers} = dict:take(PieceId, PiecePeers),
     DownloaderPid ! {refresh},
     % @todo make a switch
-    lager:error("Completed! PieceId = ~p", [PieceId]),
+    lager:info("Completed! PieceId = ~p, IpPort=~p, Hash=~p~n", [PieceId, IpPort, Hash]),
+    BlockTimes = erltorrent_store:read_blocks_time(Hash, IpPort),
+    Power = lists:foldl(
+        fun (BlockTime, {Time, BlocksCount}) ->
+            #erltorrent_store_block_time{
+                requested_at = RequestedAt,
+                received_at  = ReceivedAt
+            } = BlockTime,
+            {Time + (ReceivedAt - RequestedAt), BlocksCount + 1}
+        end,
+        {0, 0},
+        BlockTimes
+    ),
+    lager:info("IpPort (~p) power = ~p~n", [IpPort, Power]),
     {noreply, State#state{piece_peers = NewPiecePeers, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
 
 %% @doc
@@ -456,7 +477,13 @@ connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
     inets:start(),
     Separator = case string:str(TrackerLink, "?") of 0 -> "?"; _ -> "&" end,
     FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=61940&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
-    {ok, {{_Version, _Code, _ReasonPhrase}, _Headers, Body}} = httpc:request(get, {FullLink, []}, [], [{body_format, binary}]),
+    lager:info("Tracker link = ~p~n", [TrackerLink]),
+    % Lets imitate Deluge!
+    Headers = [
+        {"User-Agent", "Deluge 1.3.12"}
+    ],
+    {ok, {{_Version, _Code, _ReasonPhrase}, _Headers, Body}} = httpc:request(get, {FullLink, Headers}, [], [{body_format, binary}]),
+    lager:info("Anounce body = ~p~n", [Body]),
     erltorrent_bencoding:decode(Body).
 
 

@@ -4,7 +4,7 @@
 }).
 
 -record(erltorrent_store_piece, {
-    id                  :: tuple(),
+    id                  :: tuple(), % os:timestamp
     hash                :: binary(),
     piece_id            :: integer(),
     blocks              :: [integer()],
@@ -15,11 +15,18 @@
     updated_at          :: integer()  % When last update took place in milliseconds timestamp
 }).
 
-%%-record(erltorrent_peer, {
-%%    id,
-%%    peer_ip,
-%%
-%%}).
+-record(erltorrent_store_block_time, {
+    id              :: {piece_id_int(), block_id_int()},
+    requested_at    :: integer(),
+    received_at     :: integer()
+}).
+
+-record(erltorrent_store_peer, {
+    id              :: tuple(), % os:timestamp
+    hash            :: binary(),
+    ip_port         :: {tuple(), integer()},
+    blocks_time     :: [#erltorrent_store_block_time{}]
+}).
 
 -record(erltorrent_store_meta, {
     key     :: schema_version,

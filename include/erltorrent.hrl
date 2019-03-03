@@ -2,6 +2,7 @@
 -type payload()      :: binary().
 -type piece_id_bin() :: binary().
 -type piece_id_int() :: integer().
+-type block_id_int() :: integer().
 
 % @todo unhardcode because all piece can be smaller than this number
 -define(DEFAULT_REQUEST_LENGTH, 16384).
@@ -25,5 +26,6 @@
     last_block_id                       :: integer(), % If there are 10 blocks: last_block_id=9
     blocks                              :: [integer()], % Which blocks are left
     piece_hash                          :: binary(),  % Piece confirm hash from torrent file
+    % @todo maybe don't need
     status = not_requested              :: requested | not_requested
 }).

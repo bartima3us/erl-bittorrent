@@ -23,7 +23,9 @@
     read_piece/5,
     read_pieces/1,
     mark_piece_completed/2,
-    mark_piece_new/3
+    mark_piece_new/3,
+    update_blocks_time/6,
+    read_blocks_time/2
 ]).
 
 -export([
@@ -77,7 +79,7 @@ read_pieces(Hash) ->
 
 %% @doc
 %% Get current piece state. Update it if needed.
-%%
+%% @todo rewrite this function, maybe split into 2
 read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAction =:= read; SubAction =:= update ->
     Fun = fun() ->
         case mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}) of
@@ -109,6 +111,76 @@ read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAct
         end
     end,
     {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%%
+%%
+%%
+update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
+    Id = {PieceId, BlockId},
+    Fun = fun() ->
+        case mnesia:match_object({erltorrent_store_peer, '_', Hash, IpPort, '_'}) of
+            [Result = #erltorrent_store_peer{blocks_time = BlocksTime}] ->
+                NewBlocksTime = case lists:keysearch(Id, #erltorrent_store_block_time.id, BlocksTime) of
+                    false ->
+                        BlockTime = #erltorrent_store_block_time{
+                            id = Id
+                        },
+                        NewBlockTime = case Field of
+                            requested_at -> BlockTime#erltorrent_store_block_time{requested_at = Time};
+                            received_at  -> BlockTime#erltorrent_store_block_time{received_at = Time}
+                        end,
+                        [NewBlockTime | BlocksTime];
+                    {value, BlockTime} ->
+                        NewBlockTime = case Field of
+                            requested_at -> BlockTime#erltorrent_store_block_time{requested_at = Time};
+                            received_at  -> BlockTime#erltorrent_store_block_time{received_at = Time}
+                        end,
+                        lists:keyreplace(Id, #erltorrent_store_block_time.id, BlocksTime, NewBlockTime)
+                end,
+                UpdatedPeer = Result#erltorrent_store_peer{
+                    blocks_time = NewBlocksTime
+                },
+                mnesia:write(erltorrent_store_peer, UpdatedPeer, write),
+                UpdatedPeer;
+            []       ->
+                BlockTime = #erltorrent_store_block_time{
+                    id = Id
+                },
+                Peer = #erltorrent_store_peer{
+                    id          = os:timestamp(),
+                    hash        = Hash,
+                    ip_port     = IpPort,
+                    blocks_time = [
+                        case Field of
+                            requested_at -> BlockTime#erltorrent_store_block_time{requested_at = Time};
+                            received_at  -> BlockTime#erltorrent_store_block_time{received_at = Time}
+                        end
+                    ]
+                },
+                mnesia:write(Peer),
+                Peer
+        end
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%%
+%%
+%%
+read_blocks_time(Hash, IpPort) ->
+    MatchHead = #erltorrent_store_peer{
+        hash        = Hash,
+        ip_port     = IpPort,
+        blocks_time = '$1',
+        _           = '_'
+    },
+    Fun = fun() ->
+        mnesia:select(erltorrent_store_peer, [{MatchHead, [], ['$1']}])
+    end,
+    {atomic, [Result]} = mnesia:transaction(Fun),
     Result.
 
 
@@ -155,7 +227,8 @@ mark_piece_new(Hash, PieceId, LastBlockId) ->
 tables() -> [
     erltorrent_store_file,
     erltorrent_store_meta,
-    erltorrent_store_piece
+    erltorrent_store_piece,
+    erltorrent_store_peer
 ].
 
 
@@ -189,6 +262,7 @@ create_tables(Nodes) ->
     ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_file, OptDC)),
     ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_piece, OptDC)),
     ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_meta, OptDC)),
+    ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_peer, OptDC)),
     ok.
 
 
