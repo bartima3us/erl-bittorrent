@@ -17,7 +17,7 @@
 
 %% API
 -export([
-    start/7
+    start/6
 ]).
 
 %% gen_server callbacks
@@ -37,7 +37,6 @@
     socket                      :: port(),
     piece_data                  :: #piece{},
     parser_pid                  :: pid(),
-    server_pid                  :: pid(),
     peer_state      = choke     :: choke | unchoke,
     give_up_limit   = 3         :: integer(), % How much tries to get unchoke before giveup
     peer_id                     :: binary(),
@@ -59,8 +58,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start(TorrentId, PeerIp, Port, ServerPid, PeerId, Hash, PieceData) ->
-    gen_server:start(?MODULE, [TorrentId, PeerIp, Port, ServerPid, PeerId, Hash, PieceData], []).
+start(TorrentId, PeerIp, Port, PeerId, Hash, PieceData) ->
+    gen_server:start(?MODULE, [TorrentId, PeerIp, Port, PeerId, Hash, PieceData], []).
 
 
 
@@ -79,12 +78,11 @@ start(TorrentId, PeerIp, Port, ServerPid, PeerId, Hash, PieceData) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([TorrentId, PeerIp, Port, ServerPid, PeerId, Hash, PieceData]) ->
+init([TorrentId, PeerIp, Port, PeerId, Hash, PieceData]) ->
     State = #state{
         torrent_id      = TorrentId,
         peer_ip         = PeerIp,
         port            = Port,
-        server_pid      = ServerPid,
         peer_id         = PeerId,
         hash            = Hash,
         piece_data      = PieceData,
@@ -159,7 +157,6 @@ handle_info(request_piece, State) ->
         port         = Port,
         socket       = Socket,
         hash         = Hash,
-        server_pid   = ServerPid,
         piece_data   = PieceData
     } = State,
     #piece{
@@ -185,12 +182,12 @@ handle_info(request_piece, State) ->
             case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
-                    ServerPid ! {completed, {Ip, Port}, PieceId, self()},
+                    erltorrent_server ! {completed, {Ip, Port}, PieceId, self()},
                     false;
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
                     ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
-                    ServerPid ! {invalid_hash, PieceId, {Ip, Port}, self()},
+                    erltorrent_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
                     false
             end
     end,
@@ -198,7 +195,7 @@ handle_info(request_piece, State) ->
 
 %% @doc
 %% If `unchoke` tries limit exceeded - kill that process
-%%
+%% @todo need to implement give_up
 handle_info({tcp, _Port, _Packet}, State = #state{give_up_limit = 0}) ->
     erltorrent_helper:do_exit(self(), give_up),
     {noreply, State};
@@ -229,8 +226,8 @@ handle_info({tcp, _Port, Packet}, State) ->
     NewPeerState = lists:foldl(
         fun
             ({unchoke, true}, _Acc) -> unchoke;
-            ({choke, true}, _Acc) -> choke;
-            (_, Acc) -> Acc
+            ({choke, true},   _Acc) -> choke;
+            (_,                Acc) -> Acc
         end,
         PeerState,
         Data
@@ -298,22 +295,24 @@ handle_info({tcp, _Port, Packet}, State) ->
 %% @doc
 %% Switch peace to new one
 %%
-%%handle_info({switch_piece, PieceId, PieceLength, PieceHash}, State = #state{hash = Hash}) ->
-%%    #erltorrent_store_piece{count = Count} = erltorrent_store:read_piece(Hash, PieceId, read),
-%%    {ok, ParserPid} = erltorrent_packet:start_link(),
-%%    NewState = State#state{
-%%        piece_id        = PieceId,
-%%        piece_length    = PieceLength,
-%%        give_up_limit   = 3,
-%%        parser_pid      = ParserPid,
-%%        last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
-%%        count           = Count,
-%%        piece_hash      = PieceHash,
-%%        started_at      = erltorrent_helper:get_milliseconds_timestamp(),
-%%        updated_at      = undefined
-%%    },
-%%    self() ! request_piece,
-%%    {noreply, NewState};
+handle_info({switch_piece, Piece}, State = #state{hash = Hash}) ->
+    #piece{
+        piece_id      = PieceId,
+        last_block_id = LastBlockId,
+        status        = not_requested
+    } = Piece,
+    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, 0, read),
+    {ok, ParserPid} = erltorrent_packet:start_link(),
+    NewState = State#state{
+        piece_data      = Piece#piece{blocks = Blocks},
+        give_up_limit   = 3,
+        parser_pid      = ParserPid,
+        last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+        started_at      = erltorrent_helper:get_milliseconds_timestamp(),
+        updated_at      = undefined
+    },
+    self() ! request_piece,
+    {noreply, NewState};
 
 %% @doc
 %% Handle unknown messages.
@@ -470,8 +469,7 @@ request_piece_test_() ->
             fun() ->
                 State = #state{
                     started_at   = 5,
-                    updated_at   = 10,
-                    server_pid   = list_to_pid("<0.0.1>")
+                    updated_at   = 10
                 },
                 {noreply, State} = handle_info(request_piece, State),
                 1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
@@ -488,8 +486,7 @@ request_piece_test_() ->
             fun() ->
                 State = #state{
                     started_at   = 5,
-                    updated_at   = 10,
-                    server_pid   = list_to_pid("<0.0.1>")
+                    updated_at   = 10
                 },
                 {noreply, State} = handle_info(request_piece, State),
                 1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),

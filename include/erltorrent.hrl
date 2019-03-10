@@ -1,8 +1,9 @@
--type message_type() :: choke | unchoke | interested | uninterested | have | bitfield | request | piece | cancel.
+-type message_type() :: choke | unchoke | interested | not_interested | have | bitfield | request | piece | cancel.
 -type payload()      :: binary().
 -type piece_id_bin() :: binary().
 -type piece_id_int() :: integer().
 -type block_id_int() :: integer().
+-type ip_port()      :: {inet:ip_address(), inet:port_number()}.
 
 % @todo unhardcode because all piece can be smaller than this number
 -define(DEFAULT_REQUEST_LENGTH, 16384).
@@ -21,7 +22,7 @@
 }).
 
 -record(piece, {
-    piece_id                            :: binary(),
+    piece_id                            :: piece_id_int(),
     piece_length                        :: integer(), % Full length of piece
     last_block_id                       :: integer(), % If there are 10 blocks: last_block_id=9
     blocks                              :: [integer()], % Which blocks are left

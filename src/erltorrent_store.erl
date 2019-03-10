@@ -163,8 +163,7 @@ update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
                 Peer
         end
     end,
-    {atomic, Result} = mnesia:transaction(Fun),
-    Result.
+    mnesia:ets(Fun).
 
 
 %%
@@ -180,8 +179,10 @@ read_blocks_time(Hash, IpPort) ->
     Fun = fun() ->
         mnesia:select(erltorrent_store_peer, [{MatchHead, [], ['$1']}])
     end,
-    {atomic, [Result]} = mnesia:transaction(Fun),
-    Result.
+    case mnesia:ets(Fun) of
+        [Result] -> Result;
+        []       -> []
+    end.
 
 
 %% @doc
@@ -255,6 +256,7 @@ wait_for_tables(Timeout) ->
 %%
 create_tables(Nodes) ->
     OptDC = {disc_copies, Nodes},
+    OptRC = {ram_copies, Nodes},
     CreateTableCheckFun = fun
         ({atomic, ok}) -> ok;
         ({aborted, {already_exists, _Table}}) -> ok
@@ -262,7 +264,7 @@ create_tables(Nodes) ->
     ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_file, OptDC)),
     ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_piece, OptDC)),
     ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_meta, OptDC)),
-    ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_peer, OptDC)),
+    ok = CreateTableCheckFun(?TABLE_SET(erltorrent_store_peer, OptRC)),
     ok.
 
 

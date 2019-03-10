@@ -15,7 +15,7 @@
 -include("erltorrent.hrl").
 
 %% API
--export([start/7]).
+-export([start_link/6]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -31,14 +31,13 @@
     file_name       :: string(),
     full_size       :: integer(),
     piece_size      :: integer(),
-    peer_ip         :: tuple(),
-    port            :: integer(),
+    peer_ip         :: inet:ip_address(),
+    port            :: inet:port_number(),
     peer_id         :: string(),
     hash            :: string(),
     socket          :: port(),
     bitfield        :: binary(),
-    parser_pid      :: pid(),
-    server_pid      :: pid()
+    parser_pid      :: pid()
 }).
 
 
@@ -54,8 +53,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start(Peer, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid) ->
-    gen_server:start(?MODULE, [Peer, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid], []).
+start_link(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
+    gen_server:start_link(?MODULE, [Peer, PeerId, Hash, FileName, FullSize, PieceSize], []).
 
 
 
@@ -74,7 +73,7 @@ start(Peer, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid]) ->
+init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize, PieceSize]) ->
     {ok, ParserPid} = erltorrent_packet:start_link(),
     State = #state{
         file_name    = FileName,
@@ -84,8 +83,7 @@ init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize, PieceSize, ServerPid]) -
         port         = Port,
         peer_id      = PeerId,
         hash         = Hash,
-        parser_pid   = ParserPid,
-        server_pid   = ServerPid
+        parser_pid   = ParserPid
     },
     self() ! start,
     {ok, State}.
@@ -152,8 +150,7 @@ handle_info({tcp, _Port, Packet}, State) ->
         port         = Port,
         peer_id      = PeerId,
         hash         = Hash,
-        parser_pid   = ParserPid,
-        server_pid   = ServerPid
+        parser_pid   = ParserPid
     } = State,
     {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
     ok = case proplists:get_value(handshake, Data) of
@@ -166,11 +163,11 @@ handle_info({tcp, _Port, Packet}, State) ->
     end,
     case proplists:get_value(bitfield, Data) of
         undefined -> ok;
-        #bitfield_data{parsed = ParsedBitfield} -> ServerPid ! {bitfield, ParsedBitfield, PeerIp, Port}
+        #bitfield_data{parsed = ParsedBitfield} -> erltorrent_server ! {bitfield, ParsedBitfield, PeerIp, Port}
     end,
     case proplists:get_value(have, Data) of
         undefined -> ok;
-        PieceId  -> ServerPid ! {have, PieceId, PeerIp, Port}
+        PieceId  -> erltorrent_server ! {have, PieceId, PeerIp, Port}
     end,
     ok = erltorrent_helper:get_packet(Socket),
     {noreply, State};
@@ -180,7 +177,8 @@ handle_info({tcp, _Port, Packet}, State) ->
 %%
 handle_info({tcp_closed, Socket}, State = #state{socket = Socket}) ->
     lager:info("Socket closed! State=~p", [State]),
-    erltorrent_helper:do_exit(self(), tcp_closed),
+    % @todo still don't know if it's a normal error and should not be restarted...
+%%    erltorrent_helper:do_exit(self(), normal),
     {noreply, State};
 
 %% @doc
