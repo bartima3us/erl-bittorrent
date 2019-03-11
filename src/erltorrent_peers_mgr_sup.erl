@@ -1,4 +1,4 @@
--module(erltorrent_sup).
+-module(erltorrent_peers_mgr_sup).
 
 -behaviour(supervisor).
 
@@ -20,22 +20,23 @@ start_link() ->
 %% ===================================================================
 
 init([]) ->
-    Server = #{
-        id          => server,
-        start       => {erltorrent_server, start_link, []},
-        restart     => permanent,
-        shutdown    => 5000,
-        type        => worker,
-        modules     => [erltorrent_server]
-    },
-    PeerSup = #{
-        id          => peers_mgr_sup,
-        start       => {erltorrent_peers_mgr_sup, start_link, []},
+    PeersSup = #{
+        id          => peers_sup,
+        start       => {erltorrent_peers_sup, start_link, []},
         restart     => permanent,
         shutdown    => infinity,
         type        => supervisor,
-        modules     => [erltorrent_peers_mgr_sup]
+        modules     => [erltorrent_peers_sup]
     },
-    {ok, {{one_for_one, 5, 10}, [Server, PeerSup]}}.
+    CrawlerSup = #{
+        id          => peers_crawler_sup,
+        start       => {erltorrent_peers_crawler_sup, start_link, []},
+        restart     => permanent,
+        shutdown    => infinity,
+        type        => supervisor,
+        modules     => [erltorrent_peers_crawler_sup]
+    },
+    % Because Crawler uses Peers Sup
+    {ok, {{rest_for_one, 5, 10}, [PeersSup, CrawlerSup]}}.
 
 

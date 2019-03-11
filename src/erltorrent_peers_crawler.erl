@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : $fulldate
 %%%-------------------------------------------------------------------
--module(erltorrent_peer).
+-module(erltorrent_peers_crawler).
 -compile([{parse_transform, lager_transform}]).
 -author("bartimaeus").
 
@@ -25,20 +25,14 @@
          terminate/2,
          code_change/3]).
 
--define(SERVER, ?MODULE).
-
 -record(state, {
-    file_name       :: string(),
+    file_name       :: binary(),
+    announce_link   :: string(),
+    hash            :: binary(),
+    peer_id         :: binary(),
     full_size       :: integer(),
     piece_size      :: integer(),
-    peer_ip         :: inet:ip_address(),
-    port            :: inet:port_number(),
-    peer_id         :: string(),
-    hash            :: string(),
-    socket          :: port(),
-    bitfield        :: binary(),
-    parser_pid      :: pid(),
-    try_after       :: integer()
+    crawl_after     :: integer() % ms
 }).
 
 
@@ -54,8 +48,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
-    gen_server:start_link(?MODULE, [Peer, PeerId, Hash, FileName, FullSize, PieceSize], []).
+start_link(FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize) ->
+    gen_server:start_link(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize], []).
 
 
 
@@ -74,20 +68,18 @@ start_link(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize, PieceSize]) ->
-    {ok, ParserPid} = erltorrent_packet:start_link(),
+init([FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize]) ->
+    lager:info("Crawler is started. AnnounceLink=~p", [AnnounceLink]),
     State = #state{
-        file_name    = FileName,
-        full_size    = FullSize,
-        piece_size   = PieceSize,
-        peer_ip      = PeerIp,
-        port         = Port,
-        peer_id      = PeerId,
-        hash         = Hash,
-        parser_pid   = ParserPid,
-        try_after    = 1000
+        file_name       = FileName,
+        announce_link   = AnnounceLink,
+        hash            = Hash,
+        peer_id         = PeerId,
+        full_size       = FullSize,
+        piece_size      = PieceSize,
+        crawl_after     = 1000
     },
-    self() ! start,
+    self() ! crawl,
     {ok, State}.
 
 
@@ -136,64 +128,33 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 %% Connect to peer, make a handshake
 %%
-handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = TryAfter}) ->
-    NewState = case do_connect(State) of
-        {ok, Socket} ->
-            ok = erltorrent_message:handshake(Socket, PeerId, Hash),
-            ok = erltorrent_helper:get_packet(Socket),
-            State#state{socket = Socket};
-        {error, Error} when Error =:= econnrefused;
-                            Error =:= ehostunreach;
-                            Error =:= etimedout ->
-            NewTryAfter = case TryAfter < 10000 of
-                true  -> TryAfter + 1000;
-                false -> TryAfter
-            end,
-            erlang:send_after(TryAfter, self(), start),
-            State#state{try_after = NewTryAfter}
-    end,
-    {noreply, NewState};
-
-%% @doc
-%% Handle and parse packets from peer
-%%
-handle_info({tcp, _Port, Packet}, State) ->
+handle_info(crawl, State) ->
     #state{
-        socket       = Socket,
-        peer_ip      = PeerIp,
-        port         = Port,
-        peer_id      = PeerId,
-        hash         = Hash,
-        parser_pid   = ParserPid
+        file_name       = FileName,
+        announce_link   = AnnounceLink,
+        hash            = Hash,
+        peer_id         = PeerId,
+        full_size       = FullSize,
+        piece_size      = PieceSize,
+        crawl_after     = CrawlAfter
     } = State,
-    {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
-    ok = case proplists:get_value(handshake, Data) of
-        true -> erltorrent_message:handshake(Socket, PeerId, Hash);
-        _    -> ok
+    EncodedHash = erltorrent_helper:urlencode(Hash),
+    {ok, {dict, Result}} = connect_to_tracker(AnnounceLink, EncodedHash, PeerId, FullSize),
+    PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
+    lager:info("Peers list = ~p", [PeersIP]),
+    ok = lists:foreach(
+        fun (Peer) ->
+            ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize)
+        end,
+        PeersIP
+    ),
+    NewCrawlAfter = case CrawlAfter < 10000 of
+        true  -> CrawlAfter + 1000;
+        false -> CrawlAfter
     end,
-    ok = case proplists:get_value(keep_alive, Data) of
-        true -> erltorrent_message:keep_alive(Socket);
-        _    -> ok
-    end,
-    case proplists:get_value(bitfield, Data) of
-        undefined -> ok;
-        #bitfield_data{parsed = ParsedBitfield} -> erltorrent_server ! {bitfield, ParsedBitfield, PeerIp, Port}
-    end,
-    case proplists:get_value(have, Data) of
-        undefined -> ok;
-        PieceId  -> erltorrent_server ! {have, PieceId, PeerIp, Port}
-    end,
-    ok = erltorrent_helper:get_packet(Socket),
-    {noreply, State};
+    erlang:send_after(CrawlAfter, self(), crawl),
+    {noreply, State#state{crawl_after = NewCrawlAfter}};
 
-%% @doc
-%% Handle socket close
-%%
-handle_info({tcp_closed, Socket}, State = #state{socket = Socket}) ->
-    lager:info("Socket closed! State=~p", [State]),
-    % @todo still don't know if it's a normal error and should not be restarted...
-%%    erltorrent_helper:do_exit(self(), normal),
-    {noreply, State};
 
 %% @doc
 %% Handle unknown messages
@@ -235,14 +196,31 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-%% @doc
-%% Open a socket with peer
+%% @priv
+%% Parse peers list
 %%
-do_connect(State) ->
-    #state{
-        peer_ip = PeerIp,
-        port    = Port
-    } = State,
-    gen_tcp:connect(PeerIp, Port, [{active, false}, binary]).
+get_peers(PeersList) ->
+    get_peers(PeersList, []).
 
+get_peers(<<>>, Result) ->
+    lists:reverse(Result);
+
+get_peers(PeersList, Result) ->
+    <<Byte1:8, Byte2:8, Byte3:8, Byte4:8, Port:16, Rest/binary>> = PeersList,
+    get_peers(Rest, [{{Byte1, Byte2, Byte3, Byte4}, Port} | Result]).
+
+
+%% @priv
+%% Make HTTP connect to tracker to get information
+%%
+connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
+    inets:start(),
+    Separator = case string:str(TrackerLink, "?") of 0 -> "?"; _ -> "&" end,
+    FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=61940&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
+    % Lets imitate Deluge!
+    Headers = [
+        {"User-Agent", "Deluge 1.3.12"} % @todo need to check if it is needed
+    ],
+    {ok, {{_Version, _Code, _ReasonPhrase}, _Headers, Body}} = httpc:request(get, {FullLink, Headers}, [], [{body_format, binary}]),
+    erltorrent_bencoding:decode(Body).
 

@@ -248,12 +248,11 @@ handle_cast({download, TorrentName}, State = #state{piece_peers = PiecePeers}) -
     Pieces       = dict:fetch(<<"pieces">>, Info),
     FullSize     = dict:fetch(<<"length">>, Info),
     PieceSize    = dict:fetch(<<"piece length">>, Info),
-    TrackerLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
+    AnnounceLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
     PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
     HashBinString = crypto:hash(sha, BencodedInfo),
-    Hash = erltorrent_helper:urlencode(HashBinString),
     FileName = case erltorrent_store:read_file(HashBinString) of
         false ->
             FName = dict:fetch(<<"name">>, Info),
@@ -263,18 +262,7 @@ handle_cast({download, TorrentName}, State = #state{piece_peers = PiecePeers}) -
             FName
     end,
     lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
-    % @todo need to move to erltorrent_peers_manager which would constantly scrap new peers
-    {ok, {dict, Result}} = connect_to_tracker(TrackerLink, Hash, PeerId, FullSize),
-    PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
-    lager:info("Peers list = ~p", [PeersIP]),
-    % @todo supervisor
-    ok = lists:foreach(
-        fun (Peer) ->
-            ok = erltorrent_peers_sup:add_child(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize)
-%%            erltorrent_peer:start(Peer, PeerId, HashBinString, FileName, FullSize, PieceSize, self())
-        end,
-        PeersIP
-    ),
+    {ok, _} = erltorrent_peers_crawler_sup:start_child(FileName, AnnounceLink, HashBinString, PeerId, FullSize, PieceSize),
     LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
     LastPieceId = PiecesAmount - 1,
     % Fill empty pieces peers and downloading pieces
@@ -420,6 +408,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid}, State) ->
     NewState0 = State#state{
         piece_peers       = NewPiecePeers
     },
+%%    find_slower_peer(IpPort, State), % @todo only for testing purposes. Remove from here.
     case find_not_downloading_piece(NewState0, Ids) of
         Piece = #piece{piece_id = NewPieceId} ->
             DownloaderPid ! {switch_piece, Piece},
@@ -486,23 +475,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 
-%% @doc
-%% Make HTTP connect to tracker to get information
-%%
-connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
-    inets:start(),
-    Separator = case string:str(TrackerLink, "?") of 0 -> "?"; _ -> "&" end,
-    FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=61940&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
-    lager:info("Tracker link = ~p~n", [TrackerLink]),
-    % Lets imitate Deluge!
-    Headers = [
-        {"User-Agent", "Deluge 1.3.12"}
-    ],
-    {ok, {{_Version, _Code, _ReasonPhrase}, _Headers, Body}} = httpc:request(get, {FullLink, Headers}, [], [{body_format, binary}]),
-    lager:info("Anounce body = ~p~n", [Body]),
-    erltorrent_bencoding:decode(Body).
-
-
 %%
 %%
 %% @todo search only in the same peers list (with same pieces) as IpPort
@@ -529,8 +501,6 @@ find_slower_peer(IpPort, State) ->
     SortedDPP = lists:reverse(lists:sort(DPP)),
     {value, {SearchingPP, _}} = lists:keysearch(IpPort, 2, SortedDPP),
     lager:info("SortedDPP = ~p", [SortedDPP]),
-    lager:info("SearchingP = ~p", [IpPort]),
-    lager:info("SearchingPP = ~p", [SearchingPP]),
     Slower = lists:foldl(
         fun
             ({_Power, _Peer},  Acc) when Acc =/= false ->
@@ -547,7 +517,6 @@ find_slower_peer(IpPort, State) ->
         false,
         SortedDPP
     ),
-    lager:info("Slower = ~p", [Slower]),
     lager:info("---------------------------"),
     Slower.
 
@@ -574,20 +543,6 @@ get_peer_power(Hash, IpPort) ->
     ),
     lager:info("IpPort (~p) power = ~p~n", [IpPort, NewPeerPower]),
     NewPeerPower.
-
-
-%% @doc
-%% Parse peers list
-%%
-get_peers(PeersList) ->
-    get_peers(PeersList, []).
-
-get_peers(<<>>, Result) ->
-    lists:reverse(Result);
-
-get_peers(PeersList, Result) ->
-    <<Byte1:8, Byte2:8, Byte3:8, Byte4:8, Port:16, Rest/binary>> = PeersList,
-    get_peers(Rest, [{{Byte1, Byte2, Byte3, Byte4}, Port} | Result]).
 
 
 %% @doc

@@ -1,9 +1,9 @@
--module(erltorrent_sup).
+-module(erltorrent_peers_crawler_sup).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/0, start_child/6]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -15,27 +15,24 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
+
+start_child(FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize) ->
+    supervisor:start_child(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize]).
+
+
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
 
 init([]) ->
-    Server = #{
-        id          => server,
-        start       => {erltorrent_server, start_link, []},
+    Crawler = #{
+        id          => peers_crawler,
+        start       => {erltorrent_peers_crawler, start_link, []},
         restart     => permanent,
         shutdown    => 5000,
         type        => worker,
-        modules     => [erltorrent_server]
+        modules     => [erltorrent_peers_crawler]
     },
-    PeerSup = #{
-        id          => peers_mgr_sup,
-        start       => {erltorrent_peers_mgr_sup, start_link, []},
-        restart     => permanent,
-        shutdown    => infinity,
-        type        => supervisor,
-        modules     => [erltorrent_peers_mgr_sup]
-    },
-    {ok, {{one_for_one, 5, 10}, [Server, PeerSup]}}.
+    {ok, {{simple_one_for_one, 5, 10}, [Crawler]}}.
 
 
