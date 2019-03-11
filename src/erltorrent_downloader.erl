@@ -242,7 +242,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     end,
     % We need to loop because we can receive more than 1 piece at the same time
     % Write payload to file
-    spawn(
+    spawn_link(
         fun () ->
             ok = lists:foreach(
                 fun
