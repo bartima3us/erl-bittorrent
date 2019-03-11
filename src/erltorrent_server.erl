@@ -678,36 +678,40 @@ assign_peers([{IpPort, Ids} | T], DownloadingPeers, DownloadingPieces, State) ->
         peer_id             = PeerId,
         hash                = Hash
     } = State,
-    case lists:member(IpPort, DownloadingPeers) orelse length(DownloadingPeers) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT of
+    NewState = case lists:member(IpPort, DownloadingPeers) orelse length(DownloadingPeers) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT of
         true ->
-            NewDownloadingPeers = [],
-            NewDownloadingPieces = [];
+            State;
         false ->
             {Ip, Port} = IpPort,
-            Piece = find_not_downloading_piece(State, Ids),
-            #piece{piece_id = PieceId} = Piece,
-            {ok, Pid} = erltorrent_downloader:start(FileName, Ip, Port, PeerId, Hash, Piece),
-            Ref = erltorrent_helper:do_monitor(process, Pid),
-            %
-            % Make new downloading pieces
-            NewDownloadingPieces = [
-                #downloading_piece{
-                    key         = {PieceId, IpPort},
-                    peer        = IpPort,
-                    piece_id    = PieceId,
-                    monitor_ref = Ref,
-                    pid         = Pid,
-                    status      = downloading
-                }
-            ],
-            NewDownloadingPeers = [IpPort]
+            case find_not_downloading_piece(State, Ids) of
+                Piece = #piece{piece_id = PieceId} ->
+                    {ok, Pid} = erltorrent_downloader:start(FileName, Ip, Port, PeerId, Hash, Piece),
+                    Ref = erltorrent_helper:do_monitor(process, Pid),
+                    %
+                    % Make new downloading pieces
+                    NewDownloadingPieces = [
+                        #downloading_piece{
+                            key         = {PieceId, IpPort},
+                            peer        = IpPort,
+                            piece_id    = PieceId,
+                            monitor_ref = Ref,
+                            pid         = Pid,
+                            status      = downloading
+                        }
+                    ],
+                    NewDownloadingPeers = [IpPort],
+                    State#state{
+                        downloading_pieces = lists:append(DownloadingPieces, NewDownloadingPieces),
+                        downloading_peers  = lists:append(DownloadingPeers, NewDownloadingPeers)
+                    };
+                false ->
+                    State % @todo maybe end game? Because there aren't any not downloading piece anymore.
+            end
     end,
-    UpdatedPeers = lists:append(DownloadingPeers, NewDownloadingPeers),
-    UpdatedPieces = lists:append(DownloadingPieces, NewDownloadingPieces),
-    NewState = State#state{
-        downloading_pieces = UpdatedPieces,
-        downloading_peers  = UpdatedPeers
-    },
+    #state{
+        downloading_peers  = UpdatedPeers,
+        downloading_pieces = UpdatedPieces
+    } = NewState,
     assign_peers(T, UpdatedPeers, UpdatedPieces, NewState).
 
 
