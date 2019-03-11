@@ -349,13 +349,18 @@ handle_info({have, PieceId, Ip, Port}, State = #state{piece_peers = PiecePeers, 
     end,
     %
     % Piece peers
-    Peers = dict:fetch(PieceId, PiecePeers),
-    NewPeers = case lists:member({Ip, Port}, Peers) of
-        false -> [{Ip, Port}|Peers];
-        true  -> Peers
+    NewState = case dict:find(PieceId, PiecePeers) of
+        {ok, Peers} ->
+            NewPeers = case lists:member({Ip, Port}, Peers) of
+                false -> [{Ip, Port} | Peers];
+                true  -> Peers
+            end,
+            NewPiecePeers = dict:store(PieceId, NewPeers, PiecePeers),
+            State#state{piece_peers = NewPiecePeers, peer_pieces = NewPeerPieces};
+        error ->
+            State
     end,
-    NewPiecePeers = dict:store(PieceId, NewPeers, PiecePeers),
-    {noreply, State#state{piece_peers = NewPiecePeers, peer_pieces = NewPeerPieces}};
+    {noreply, NewState};
 
 %% @doc
 %% Async check is end

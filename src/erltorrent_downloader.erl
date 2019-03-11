@@ -241,15 +241,30 @@ handle_info({tcp, _Port, Packet}, State) ->
             ok
     end,
     % We need to loop because we can receive more than 1 piece at the same time
-    WriteFun = fun
-        ({piece, Piece = #piece_data{payload = Payload, piece_index = GotPieceId, block_offset = BlockOffset}}) ->
+    % Write payload to file
+    spawn(
+        fun () ->
+            ok = lists:foreach(
+                fun
+                    ({piece, #piece_data{payload = Payload, piece_index = GotPieceId, block_offset = BlockOffset}}) ->
+                        <<PieceBegin:32>> = BlockOffset,
+                        FileName = filename:join(["temp", TorrentId, integer_to_list(GotPieceId), integer_to_list(PieceBegin) ++ ".block"]),
+                        filelib:ensure_dir(FileName),
+                        file:write_file(FileName, Payload),
+                        ok;
+                   (_Else) ->
+                       ok
+                end,
+                Data
+            )
+        end
+    ),
+    UpdateFun = fun
+        ({piece, Piece = #piece_data{block_offset = BlockOffset}}) ->
             <<PieceBegin:32>> = BlockOffset,
             BlockId = trunc(PieceBegin / ?DEFAULT_REQUEST_LENGTH),
             erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
             erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
-            FileName = filename:join(["temp", TorrentId, integer_to_list(GotPieceId), integer_to_list(PieceBegin) ++ ".block"]),
-            filelib:ensure_dir(FileName),
-            file:write_file(FileName, Payload),
             {true, Piece};
        (_Else) ->
            false
@@ -257,7 +272,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     % Check current my peer state. If it's unchoke - request for piece. If it's choke - try to get unchoke by sending interested.
     UpdatedPieceData = case NewPeerState of
         unchoke ->
-            case lists:filtermap(WriteFun, Data) of
+            case lists:filtermap(UpdateFun, Data) of
                 [_|_]  ->
                     self() ! request_piece,
                     #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, PieceId, 0, 0, read),

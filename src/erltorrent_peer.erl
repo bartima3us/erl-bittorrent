@@ -144,7 +144,8 @@ handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = Try
             State#state{socket = Socket};
         {error, Error} when Error =:= econnrefused;
                             Error =:= ehostunreach;
-                            Error =:= etimedout ->
+                            Error =:= etimedout;
+                            Error =:= enetunreach -> % @todo maybe need particular behavior on particular error?
             NewTryAfter = case TryAfter < 10000 of
                 true  -> TryAfter + 1000;
                 false -> TryAfter

@@ -5,7 +5,7 @@ Erlang BitTorrent client
 
 Currently only for downloading. There is no any possibility to share downloaded file (real pirate's client). There is no possibility to download multiple files torrent at the moment.
 
-Tested on Lithuanian trackers "Linkomanija" and "Torrent.lt".
+Tested on Russian tracker "RuTracker.net" and Lithuanian trackers "Linkomanija.net" and "Torrent.lt".
 
 Works only on Erlang/OTP 20 or newer.
 
