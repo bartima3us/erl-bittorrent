@@ -399,9 +399,8 @@ handle_info(assign_peers, State = #state{}) ->
 %%    NewPeers = lists:sort(lists:keyreplace(IpPort, #peer.ip_port, Peers, Peer#peer{rating = undefined, count_blocks = 0, time = 0})),
 %%    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers, give_up_limit = NewGiveUpLimit, peers = NewPeers}};
 
-handle_info({completed, IpPort, PieceId, DownloaderPid}, State) ->
+handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime}, State) ->
     #state{
-        hash                = Hash,
         piece_peers         = PiecePeers,
         peer_pieces         = PeerPieces,
         downloading_peers   = DownloadingPeers,
@@ -409,7 +408,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid}, State) ->
     } = State,
     {_Peers, NewPiecePeers} = dict:take(PieceId, PiecePeers),
     {ok, Ids} = dict:find(IpPort, PeerPieces),
-    lager:info("Completed! PieceId = ~p, IpPort=~p, Hash=~p~n", [PieceId, IpPort, Hash]),
+    lager:info("Completed! PieceId = ~p, IpPort=~p, parse time=~p s~n", [PieceId, IpPort, (ParseTime / 1000000)]),
     NewState0 = State#state{
         piece_peers       = NewPiecePeers
     },

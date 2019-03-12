@@ -43,7 +43,8 @@
     hash                        :: binary(),
     last_action                 :: integer(), % Gregorian seconds when last packet was received
     started_at                  :: integer(), % When piece downloading started in milliseconds timestamp
-    updated_at                  :: integer()  % When last update took place in milliseconds timestamp
+    updated_at                  :: integer(),  % When last update took place in milliseconds timestamp
+    parse_time      = 0         :: integer()
 }).
 
 
@@ -157,7 +158,8 @@ handle_info(request_piece, State) ->
         port         = Port,
         socket       = Socket,
         hash         = Hash,
-        piece_data   = PieceData
+        piece_data   = PieceData,
+        parse_time   = ParseTime
     } = State,
     #piece{
         piece_id      = PieceId,
@@ -182,7 +184,7 @@ handle_info(request_piece, State) ->
             case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
-                    erltorrent_server ! {completed, {Ip, Port}, PieceId, self()},
+                    erltorrent_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime},
                     false;
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
@@ -212,12 +214,16 @@ handle_info({tcp, _Port, Packet}, State) ->
         piece_data      = PieceData,
         socket          = Socket,
         peer_state      = PeerState,
-        hash            = Hash
+        hash            = Hash,
+        parse_time      = OldParseTime
     } = State,
     #piece{
         piece_id = PieceId
     } = PieceData,
-    {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
+%%    {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
+    {ParseTime, {ok, Data}} = timer:tc(fun () ->
+         erltorrent_packet:parse(ParserPid, Packet)
+    end),
     ok = case proplists:get_value(handshake, Data) of
         true -> erltorrent_message:interested(Socket);
         _    -> ok
@@ -288,7 +294,8 @@ handle_info({tcp, _Port, Packet}, State) ->
     end,
     NewState = State#state{
         piece_data = UpdatedPieceData,
-        peer_state = NewPeerState
+        peer_state = NewPeerState,
+        parse_time = OldParseTime + ParseTime
     },
     {noreply, NewState};
 
