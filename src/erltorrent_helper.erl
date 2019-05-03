@@ -1,6 +1,6 @@
 %%%-------------------------------------------------------------------
 %%% @author bartimaeus
-%%% @copyright (C) 2017, <COMPANY>
+%%% @copyright (C) 2017, sarunas.bartusevicius@gmail.com
 %%% @doc
 %%%
 %%% @end

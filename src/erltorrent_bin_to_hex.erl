@@ -1,12 +1,6 @@
-%%%-------------------------------------------------------------------
-%%% @author bartimaeus
-%%% @copyright (C) 2017, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 22. Oct 2017 14.15
-%%%-------------------------------------------------------------------
-
+%%
+%%
+%%
 %% https://stackoverflow.com/questions/3768197/erlang-ioformatting-a-binary-to-hex
 -module(erltorrent_bin_to_hex).
 -author("bartimaeus").

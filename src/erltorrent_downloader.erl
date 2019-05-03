@@ -1,6 +1,6 @@
 %%%-------------------------------------------------------------------
 %%% @author bartimaeus
-%%% @copyright (C) 2018, <COMPANY>
+%%% @copyright (C) 2018, sarunas.bartusevicius@gmail.com
 %%% @doc
 %%%
 %%% @end
@@ -43,7 +43,7 @@
     hash                        :: binary(),
     last_action                 :: integer(), % Gregorian seconds when last packet was received
     started_at                  :: integer(), % When piece downloading started in milliseconds timestamp
-    updated_at                  :: integer(),  % When last update took place in milliseconds timestamp
+    updated_at                  :: integer(), % When last update took place in milliseconds timestamp
     parse_time      = 0         :: integer()
 }).
 
@@ -140,13 +140,23 @@ handle_cast(_Msg, State) ->
 %% Start downloading from peer: open socket, make a handshake, start is alive checking timer.
 %%
 handle_info(start, State = #state{peer_ip = PeerIp, port = Port, peer_id = PeerId, hash = Hash, piece_data = PieceData}) ->
-    #piece{piece_id = PieceId, last_block_id = LastBlockId, status = not_requested} = PieceData,
+    #piece{
+        piece_id = PieceId,
+        last_block_id = LastBlockId,
+        status = not_requested
+    } = PieceData,
     #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, 0, read),
     {ok, Socket} = do_connect(PeerIp, Port),
     {ok, ParserPid} = erltorrent_packet:start_link(),
     ok = erltorrent_message:handshake(Socket, PeerId, Hash),
     ok = erltorrent_helper:get_packet(Socket),
-    {noreply, State#state{socket = Socket, parser_pid = ParserPid, piece_data = PieceData#piece{blocks = Blocks}}};
+    NewState = State#state{
+        socket = Socket,
+        parser_pid = ParserPid,
+        piece_data = PieceData#piece{blocks = Blocks}
+    },
+    ok = erltorrent_peer_events:add_sup_handler(PieceId, [self(), PieceId]),
+    {noreply, NewState};
 
 %% @doc
 %% Request for a blocks from peer
@@ -271,6 +281,7 @@ handle_info({tcp, _Port, Packet}, State) ->
             BlockId = trunc(PieceBegin / ?DEFAULT_REQUEST_LENGTH),
             erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
             erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
+            erltorrent_peer_events:block_downloaded(PieceId, BlockId, self()),
             {true, Piece};
        (_Else) ->
            false
@@ -317,7 +328,10 @@ handle_info({tcp, _Port, Packet}, State) ->
 %% @doc
 %% Switch peace to new one
 %%
-handle_info({switch_piece, Piece}, State = #state{hash = Hash}) ->
+handle_info({switch_piece, Piece}, State = #state{hash = Hash, piece_data = OldPieceData}) ->
+    #piece{
+        piece_id      = OldPieceId
+    } = OldPieceData,
     #piece{
         piece_id      = PieceId,
         last_block_id = LastBlockId,
@@ -331,10 +345,21 @@ handle_info({switch_piece, Piece}, State = #state{hash = Hash}) ->
         parser_pid      = ParserPid,
         last_action     = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
         started_at      = erltorrent_helper:get_milliseconds_timestamp(),
-        updated_at      = undefined
+        updated_at      = undefined,
+        parse_time      = 0
     },
+    erltorrent_peer_events:swap_sup_handler(OldPieceId, PieceId),
     self() ! request_piece,
     {noreply, NewState};
+
+%%  @doc
+%%  Event from erltorrent_peer_events
+%%
+handle_info({block_downloaded, BlockId}, State) ->
+    % @todo Delete BlockId from State
+    % @todo Send cancel if already requested BlockId
+    lager:info("Block downloaded = ~p", [BlockId]),
+    {noreply, State};
 
 %% @doc
 %% Handle unknown messages.
@@ -394,6 +419,7 @@ get_request_data(BlockId, PieceLength) ->
         false -> PieceLength - OffsetInt
     end,
     {ok, {NextLength, OffsetBin}}.
+
 
 %% @doc
 %% Get increased `length` and `offset` of several blocks

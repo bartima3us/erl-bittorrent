@@ -268,6 +268,7 @@ handle_cast({download, TorrentName}, State = #state{piece_peers = PiecePeers}) -
     % Fill empty pieces peers and downloading pieces
     IdsList = lists:seq(0, LastPieceId),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
+    {ok, _MgrPid} = erltorrent_peer_events:start_link(),
     NewState = State#state{
         file_name           = FileName,
         pieces_amount       = PiecesAmount,
@@ -382,8 +383,6 @@ handle_info(is_end, State = #state{piece_peers = PiecePeers, file_name = FileNam
 %%
 handle_info(assign_peers, State = #state{}) ->
     NewState = assign_peers(State),
-%%    check_is_end(State),
-%%    erlang:send_after(1000, self(), assign_peers),
     {noreply, NewState};
 
 %% @doc
@@ -413,22 +412,25 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime}, State) ->
         piece_peers       = NewPiecePeers
     },
 %%    find_slower_peer(IpPort, State), % @todo only for testing purposes. Remove from here.
-    case find_not_downloading_piece(NewState0, Ids) of
+    EndGame = case find_not_downloading_piece(NewState0, Ids) of
         Piece = #piece{piece_id = NewPieceId} ->
             DownloaderPid ! {switch_piece, Piece},
             {value, OldDP} = lists:keysearch({PieceId, IpPort}, #downloading_piece.key, DownloadingPieces),
             DP0 = lists:keyreplace({PieceId, IpPort}, #downloading_piece.key, DownloadingPieces, OldDP#downloading_piece{status = completed}),
             NewDownloadingPieces = [OldDP#downloading_piece{key = {NewPieceId, IpPort}, piece_id = NewPieceId, status = downloading} | DP0],
-            NewDownloadingPeers = DownloadingPeers;
+            NewDownloadingPeers = DownloadingPeers,
+            false;
         % If it's the last one piece, take one from slowest peer
         false ->
-%%            find_slower_peer(IpPort, State), % @todo implement
+            % @todo implement end game
             NewDownloadingPieces = DownloadingPieces,
-            NewDownloadingPeers = lists:delete(IpPort, DownloadingPeers)
+            NewDownloadingPeers = lists:delete(IpPort, DownloadingPeers),
+            true
     end,
     NewState1 = NewState0#state{
         downloading_pieces = NewDownloadingPieces,
-        downloading_peers  = NewDownloadingPeers
+        downloading_peers  = NewDownloadingPeers,
+        end_game           = EndGame
     },
     {noreply, NewState1};
 
@@ -547,16 +549,6 @@ get_peer_power(Hash, IpPort) ->
     ),
     lager:info("IpPort (~p) power = ~p~n", [IpPort, NewPeerPower]),
     NewPeerPower.
-
-
-%% @doc
-%% Check is downloading ended
-%%
-check_is_end(#state{end_game = false}) ->
-    self() ! is_end;
-
-check_is_end(#state{end_game = true}) ->
-    erlang:send_after(3000, self(), is_end).
 
 
 %% @doc

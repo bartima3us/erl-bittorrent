@@ -77,7 +77,7 @@ init([FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize]) ->
         peer_id         = PeerId,
         full_size       = FullSize,
         piece_size      = PieceSize,
-        crawl_after     = 1000
+        crawl_after     = 10000
     },
     self() ! crawl,
     {ok, State}.
@@ -142,13 +142,30 @@ handle_info(crawl, State) ->
     {ok, {dict, Result}} = connect_to_tracker(AnnounceLink, EncodedHash, PeerId, FullSize),
     PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
     lager:info("Peers list = ~p", [PeersIP]),
+%%    AllowedPorts = [
+%%        29856,
+%%        51904,
+%%        29659,
+%%        55510,
+%%        11426 % true
+%%    ],
     ok = lists:foreach(
-        fun (Peer) ->
-            ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize)
+        fun
+%%            (Peer = {_, Port}) ->
+%%                case lists:member(Port, AllowedPorts) of
+%%                    true ->
+%%                        ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize);
+%%                    false ->
+%%                        ok
+%%                end;
+%%            (_) ->
+%%                lager:info("xxxxxxxxx PEER DISCARDED!!!!! TESTING MODE. xxxxxxxxx"),
+%%                ok
+            (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize)
         end,
         PeersIP
     ),
-    NewCrawlAfter = case CrawlAfter < 10000 of
+    NewCrawlAfter = case CrawlAfter < 20000 of
         true  -> CrawlAfter + 1000;
         false -> CrawlAfter
     end,
@@ -216,10 +233,11 @@ get_peers(PeersList, Result) ->
 connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
     inets:start(),
     Separator = case string:str(TrackerLink, "?") of 0 -> "?"; _ -> "&" end,
-    FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=61940&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
+    FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=54761&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
     % Lets imitate Deluge!
     Headers = [
-        {"User-Agent", "Deluge 1.3.12"} % @todo need to check if it is needed
+        {"User-Agent", "Deluge 1.3.12"}, % @todo need to check if it is needed
+        {"Accept-Encoding", "gzip"}
     ],
     {ok, {{_Version, _Code, _ReasonPhrase}, _Headers, Body}} = httpc:request(get, {FullLink, Headers}, [], [{body_format, binary}]),
     erltorrent_bencoding:decode(Body).
