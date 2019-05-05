@@ -20,7 +20,7 @@
     add_sup_handler/2,
     end_game/0,
     block_downloaded/3,
-    swap_sup_handler/2
+    swap_sup_handler/3
 ]).
 
 %% gen_event callbacks
@@ -68,8 +68,8 @@ add_sup_handler(Id, Args) ->
 %%  @doc
 %%  Swap old handler to new one.
 %%
-swap_sup_handler(OldId, NewId) ->
-    gen_event:swap_sup_handler(?MODULE, {{?MODULE, OldId}, switch}, {{?MODULE, NewId}, NewId}).
+swap_sup_handler(OldId, NewId, PieceId) ->
+    gen_event:swap_sup_handler(?MODULE, {{?MODULE, OldId}, switch}, {{?MODULE, NewId}, PieceId}).
 
 
 %%  @doc
@@ -123,6 +123,7 @@ handle_event(end_game, State) ->
     {ok, State#state{end_game = true}};
 
 handle_event({block_downloaded, PieceId, BlockId, From}, State = #state{piece_id = PieceId, downloader_pid = Pid}) when From =/= Pid ->
+    % Send only to PieceId owners except From (he's a sender so he knows that he downloaded that block)
     Pid ! {block_downloaded, BlockId},
     {ok, State};
 

@@ -142,6 +142,9 @@ handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = Try
             ok = erltorrent_message:handshake(Socket, PeerId, Hash),
             ok = erltorrent_helper:get_packet(Socket),
             State#state{socket = Socket};
+        {error, emfile} ->
+            lager:info("File descriptor is exhausted. Can't open a new socket for peer."),
+            exit(shutdown);
         {error, Error} when Error =:= econnrefused;
                             Error =:= ehostunreach;
                             Error =:= etimedout;

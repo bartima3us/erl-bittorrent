@@ -22,6 +22,7 @@
     bin_piece_id_to_int/1,
     int_piece_id_to_bin/1,
     do_exit/2,
+    do_exit/1,
     do_monitor/2,
     get_milliseconds_timestamp/0,
     shuffle_list/1
@@ -242,6 +243,13 @@ sort_with_split(Files) ->
 %%
 do_exit(Pid, Reason) ->
     exit(Pid, Reason).
+
+
+%% @doc
+%% Exit process fun. Need because of mock purposes for tests.
+%%
+do_exit(Reason) ->
+    exit(Reason).
 
 
 %% @doc

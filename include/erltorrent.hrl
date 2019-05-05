@@ -22,11 +22,11 @@
 }).
 
 -record(piece, {
-    piece_id                            :: piece_id_int(),
-    piece_length                        :: integer(), % Full length of piece
-    last_block_id                       :: integer(), % If there are 10 blocks: last_block_id=9
-    blocks                              :: [integer()], % Which blocks are left
-    piece_hash                          :: binary(),  % Piece confirm hash from torrent file
+    piece_id                    :: piece_id_int(),
+    piece_length                :: integer(),           % Full length of piece
+    last_block_id               :: block_id_int(),      % If there are 10 blocks: last_block_id=9
+    blocks                      :: [block_id_int()],    % Which blocks are left
+    piece_hash                  :: binary(),            % Piece confirm hash from torrent file
     % @todo maybe don't need
-    status = not_requested              :: requested | not_requested
+    status = not_requested      :: requested | not_requested
 }).
