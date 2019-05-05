@@ -24,7 +24,8 @@
     all_pieces_except_completed/0,
     get_completion_percentage/1,
     all_peers/0,
-    count_downloading_pieces/0
+    count_downloading_pieces/0,
+    avg_block_download_time/0
 ]).
 
 %% gen_server callbacks
@@ -80,7 +81,11 @@
     pieces_hash                      :: binary(),
     % @todo maybe need to persist give up limit?
     give_up_limit      = 20          :: integer(),  % Give up all downloading limit if pieces hash is invalid
-    end_game           = false       :: boolean()
+    end_game           = false       :: boolean(),
+    pieces_left        = []          :: [integer()],
+    avg_block_download_time = false  :: integer() | false,
+    assign_peers_timer      = false,
+    speed_checking_steps     = []     :: [integer()]
 }).
 
 % make start
@@ -131,6 +136,13 @@ downloading_piece(Id) ->
 %%
 count_downloading_pieces() ->
     gen_server:call(?SERVER, count_downloading_pieces).
+
+
+%%
+%%
+%%
+avg_block_download_time() ->
+    gen_server:call(?SERVER, avg_block_download_time).
 
 
 %% @doc
@@ -196,14 +208,22 @@ handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = 
 %% @doc
 %% Handle is end checking call
 %%
-handle_call(all_pieces_except_completed, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
-    {reply, get_all_except_completed_pieces(DownloadingPieces), State};
+handle_call(all_pieces_except_completed, _From, State = #state{pieces_left = PiecesLeft}) ->
+    {reply, PiecesLeft, State};
 
 %% @doc
 %% Handle is end checking call
 %%
 handle_call(count_downloading_pieces, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
     {reply, length(get_downloading_pieces(DownloadingPieces)), State};
+
+
+%%
+%%
+%%
+handle_call(avg_block_download_time, _From, State = #state{hash = Hash}) ->
+    {reply, get_avg_block_download_time(Hash), State};
+
 
 %% @doc
 %% Handle unknown calls
@@ -255,15 +275,17 @@ handle_cast({download, TorrentName}, State = #state{piece_peers = PiecePeers}) -
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
     {ok, _MgrPid} = erltorrent_peer_events:start_link(),
     NewState = State#state{
-        file_name           = FileName,
-        pieces_amount       = PiecesAmount,
-        piece_peers         = NewPiecesPeers,
-        peer_id             = PeerId,
-        hash                = HashBinString,
-        piece_length        = PieceSize,
-        last_piece_length   = LastPieceLength,
-        last_piece_id       = LastPieceId,
-        pieces_hash         = Pieces
+        file_name            = FileName,
+        pieces_amount        = PiecesAmount,
+        piece_peers          = NewPiecesPeers,
+        peer_id              = PeerId,
+        hash                 = HashBinString,
+        piece_length         = PieceSize,
+        last_piece_length    = LastPieceLength,
+        last_piece_id        = LastPieceId,
+        pieces_hash          = Pieces,
+        pieces_left          = IdsList,
+        speed_checking_steps = lists:seq(5, 95, 5)
     },
     {noreply, NewState}.
 
@@ -349,26 +371,11 @@ handle_info({have, PieceId, Ip, Port}, State = #state{piece_peers = PiecePeers, 
     {noreply, NewState};
 
 %% @doc
-%% Async check is end
-%%
-handle_info(is_end, State = #state{piece_peers = PiecePeers, file_name = FileName, downloading_pieces = DownloadingPieces, end_game = EndGame}) ->
-    case dict:is_empty(PiecePeers) of
-        true ->
-%%            ok = erltorrent_helper:concat_file(FileName),
-%%            ok = erltorrent_helper:delete_downloaded_pieces(FileName),
-            lager:info("File has been downloaded successfully!"),
-            erltorrent_helper:do_exit(self(), completed);
-        false ->
-            ok
-    end,
-    {noreply, State#state{end_game = false}};
-
-%% @doc
 %% Assign pieces for peers to download
 %%
 handle_info(assign_peers, State = #state{}) ->
     NewState = assign_peers(State),
-    {noreply, NewState};
+    {noreply, NewState#state{assign_peers_timer = false}};
 
 %% @doc
 %% If downloaded piece hash was invalid, update state pieces downloading state and reduce give up limit
@@ -385,18 +392,24 @@ handle_info(assign_peers, State = #state{}) ->
 
 handle_info({completed, IpPort, PieceId, _DownloaderPid, ParseTime, _EndGame = true}, State) ->
     NewState = remove_downloaded_piece_siblings(State, PieceId),
-    [Completion] = io_lib:format("~.2f", [get_completion_percentage(NewState)]),
+    Progress = get_completion_percentage(NewState),
+    [Completion] = io_lib:format("~.2f", [Progress]),
     lager:info("Completed under end game! PieceId = ~p, IpPort=~p, parse time=~p s, completion=~p%~n", [PieceId, IpPort, (ParseTime / 1000000), list_to_float(Completion)]),
+    is_end(NewState),
+    NewState1 = do_speed_checking(NewState, Progress),
     self() ! assign_peers,
-    {noreply, NewState};
+    {noreply, NewState1};
 
 handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, _EndGame = false}, State) ->
     #state{
-        piece_peers         = PiecePeers,
-        peer_pieces         = PeerPieces,
-        downloading_peers   = DownloadingPeers,
-        downloading_pieces  = DownloadingPieces,
-        end_game            = CurrentEndGame
+        hash                    = Hash,
+        piece_peers             = PiecePeers,
+        peer_pieces             = PeerPieces,
+        downloading_peers       = DownloadingPeers,
+        downloading_pieces      = DownloadingPieces,
+        end_game                = CurrentEndGame,
+        pieces_left             = PiecesLeft,
+        avg_block_download_time = AvgBlockDownloadTime
     } = State,
     {_Peers, NewPiecePeers} = case dict:is_key(PieceId, PiecePeers) of
         true  -> dict:take(PieceId, PiecePeers);
@@ -435,26 +448,87 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, _EndGame = fa
         false ->
             {{DownloadingPieces, DownloadingPeers}, CurrentEndGame}
     end,
+    NewAvgBlockDownloadTime = case {EndGame, AvgBlockDownloadTime} of
+       {true, false} -> trunc(get_avg_block_download_time(Hash));
+       {true, _}     -> AvgBlockDownloadTime;
+       _             -> false
+    end,
     NewState1 = NewState0#state{
-        downloading_pieces = NewDownloadingPieces,
-        downloading_peers  = NewDownloadingPeers,
-        end_game           = EndGame
+        downloading_pieces      = NewDownloadingPieces,
+        downloading_peers       = NewDownloadingPeers,
+        end_game                = EndGame,
+        pieces_left             = PiecesLeft -- [PieceId],
+        avg_block_download_time = NewAvgBlockDownloadTime
     },
-    [Completion] = io_lib:format("~.2f", [get_completion_percentage(NewState1)]),
+    Progress = get_completion_percentage(NewState1),
+    [Completion] = io_lib:format("~.2f", [Progress]),
     lager:info("Completed! PieceId = ~p, IpPort=~p, parse time=~p s, completion=~p%~n", [PieceId, IpPort, (ParseTime / 1000000), list_to_float(Completion)]),
+    is_end(NewState1),
+    NewState2 = do_speed_checking(NewState1, Progress),
     self() ! assign_peers,
-    {noreply, NewState1};
+    {noreply, NewState2};
 
 %% @doc
-%% Remove process from downloading pieces if it crashes. Move that peer into end of queue.
+%% Remove process from downloading pieces if it crashes.
 %%
-handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, peer_pieces = PeerPieces, downloading_peers = DownloadingPeers}) ->
-    {value, #downloading_piece{key = {_, IpPort}}} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
-    {_, NewPeerPieces} = case dict:is_key(IpPort, PeerPieces) of
-        true  -> dict:take(IpPort, PeerPieces);
-        false -> {ok, PeerPieces}
+handle_info({'DOWN', MonitorRef, process, _Pid, Reason}, State) when
+    Reason =:= socket_error;
+    Reason =:= too_slow
+    ->
+    #state{
+        downloading_pieces = DownloadingPieces,
+        downloading_peers  = DownloadingPeers,
+        peer_pieces        = PeerPieces,
+        assign_peers_timer = AssignPeersTimer
+    } = State,
+    % @todo DRY all handle_info({'DOWN'...
+    {NewDownloadingPieces, NewDownloadingPeers, NewPeerPieces} = case lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces) of
+        {value, #downloading_piece{piece_id = PieceId, key = {_, IpPort}}} ->
+            NewPieces = lists:keydelete({PieceId, IpPort}, #downloading_piece.key, DownloadingPieces),
+            NewPeers = lists:delete(IpPort, DownloadingPeers),
+            case Reason of
+                too_slow ->
+                    lager:info("Stopped because too slow! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
+                    % Completely remove slow peers from available peers list
+                    {_, NewPP} = case dict:is_key(IpPort, PeerPieces) of
+                        true  -> dict:take(IpPort, PeerPieces);
+                        false -> {ok, PeerPieces}
+                    end,
+                    {NewPieces, NewPeers, NewPP};
+                _        ->
+                    {NewPieces, NewPeers, PeerPieces}
+            end;
+        false ->
+            {DownloadingPieces, DownloadingPeers, PeerPieces}
     end,
-    {noreply, State#state{peer_pieces = NewPeerPieces, downloading_peers = lists:delete(IpPort, DownloadingPeers)}};
+    TimerRef = case AssignPeersTimer of
+        false -> erlang:send_after(1000, self(), assign_peers);
+        Ref   -> Ref
+    end,
+    NewState = State#state{
+        downloading_pieces = NewDownloadingPieces,
+        downloading_peers  = NewDownloadingPeers,
+        peer_pieces        = NewPeerPieces,
+        assign_peers_timer = TimerRef
+    },
+    {noreply, NewState};
+
+handle_info({'DOWN', MonitorRef, process, _Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces, downloading_peers = DownloadingPeers}) ->
+    {NewDownloadingPieces, NewDownloadingPeers} = case lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces) of
+        {value, #downloading_piece{piece_id = PieceId, key = {_, IpPort}}} ->
+            NewPieces = lists:keydelete({PieceId, IpPort}, #downloading_piece.key, DownloadingPieces),
+            NewPeers = lists:delete(IpPort, DownloadingPeers),
+            {NewPieces, NewPeers};
+        false ->
+            {DownloadingPieces, DownloadingPeers}
+    end,
+    % @todo need to make smarter algorithm
+%%    {_, NewPeerPieces} = case dict:is_key(IpPort, PeerPieces) of
+%%        true  -> dict:take(IpPort, PeerPieces);
+%%        false -> {ok, PeerPieces}
+%%    end,
+    self() ! assign_peers,
+    {noreply, State#state{downloading_pieces = NewDownloadingPieces, downloading_peers = NewDownloadingPeers}};
 
 %% @doc
 %% Unknown messages
@@ -498,10 +572,58 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 %%
 %%
+do_speed_checking(State = #state{speed_checking_steps = []}, _Progress) ->
+    State;
+
+do_speed_checking(State, Progress) ->
+    #state{
+        hash                 = Hash,
+        downloading_pieces   = DownloadingPieces,
+        speed_checking_steps = SpeedCheckingSteps
+    } = State,
+    [CurrentStep | OtherSteps] = SpeedCheckingSteps,
+    case CurrentStep =< Progress of
+        true ->
+            AvgDownloadingTime = get_avg_block_download_time(Hash),
+            spawn(
+                fun () ->
+                    ok = lists:foreach(
+                        fun
+                            (#downloading_piece{pid = Pid, status = downloading}) ->
+                                Pid ! {check_speed, AvgDownloadingTime};
+                            (_) ->
+                                ok
+                        end,
+                        DownloadingPieces
+                    )
+                end
+            ),
+            State#state{speed_checking_steps = OtherSteps};
+        false ->
+            State
+    end.
+
+
+%%
+%%
+%%
+is_end(#state{pieces_left = [_|_]}) ->
+    ok;
+
+is_end(#state{file_name = FileName, pieces_left = []}) ->
+    ok = erltorrent_helper:concat_file(FileName),
+    lager:info("Download completed!"),
+    exit(completed).
+
+
+%%
+%%
+%%
 remove_downloaded_piece_siblings(State, DownloadedPieceId) ->
     #state{
         downloading_pieces = DownloadingPieces,
-        downloading_peers  = DownloadingPeers
+        downloading_peers  = DownloadingPeers,
+        pieces_left        = PiecesLeft
     } = State,
     {NewDownloadingPieces, RemovedPeers} = lists:foldl(
         fun
@@ -517,9 +639,11 @@ remove_downloaded_piece_siblings(State, DownloadedPieceId) ->
         DownloadingPieces
     ),
     NewDownloadingPeers = DownloadingPeers -- RemovedPeers,
+    NewPiecesLeft       = PiecesLeft -- [DownloadedPieceId],
     State#state{
         downloading_pieces = NewDownloadingPieces,
-        downloading_peers  = NewDownloadingPeers
+        downloading_peers  = NewDownloadingPeers,
+        pieces_left        = NewPiecesLeft
     }.
 
 %%
@@ -592,6 +716,36 @@ get_peer_power(Hash, IpPort) ->
     NewPeerPower.
 
 
+%%
+%%
+%%
+get_avg_block_download_time(Hash) ->
+    BlockTimes = erltorrent_store:read_blocks_time(Hash),
+    % @todo Maybe don't recount from beginning every time?
+    {Time, Blocks} = lists:foldl(
+        fun (BlockTime, {AccTime, AccBlocks}) ->
+            #erltorrent_store_block_time{
+                requested_at = RequestedAt,
+                received_at  = ReceivedAt
+            } = BlockTime,
+            case ReceivedAt of
+                ReceivedAt when is_integer(RequestedAt),
+                    is_integer(ReceivedAt),
+                    is_integer(AccBlocks)
+                    ->
+                    {AccTime + (ReceivedAt - RequestedAt), AccBlocks + 1};
+                undefined  ->
+                    {AccTime, AccBlocks}; % @todo Need to add some fake ReceivedAt if it was requested long time ago
+                _          ->
+                    {AccTime, AccBlocks}
+            end
+        end,
+        {0, 0},
+        BlockTimes
+    ),
+    Time / Blocks.
+
+
 %% @doc
 %% Get still not started downloading pieces
 %%
@@ -649,10 +803,10 @@ get_completed_pieces(DownloadingPieces) ->
 %%
 get_completion_percentage(State) ->
     #state{
-        downloading_pieces = Pieces,
+        pieces_left        = Pieces,
         pieces_amount      = PiecesAmount
     } = State,
-    DownloadingPiecesAmount = length(get_completed_pieces(Pieces)),
+    DownloadingPiecesAmount = PiecesAmount - length(Pieces),
     DownloadingPiecesAmount * 100 / PiecesAmount.
 
 
@@ -708,12 +862,13 @@ assign_peers([], _DownloadingPeers, _DownloadingPieces, State) ->
 
 assign_peers([{IpPort, Ids} | T], DownloadingPeers, DownloadingPieces, State) ->
     #state{
-        file_name           = FileName,
-        downloading_pieces  = DownloadingPieces,
-        downloading_peers   = DownloadingPeers,
-        peer_id             = PeerId,
-        hash                = Hash,
-        end_game            = CurrentEndGame
+        file_name               = FileName,
+        downloading_pieces      = DownloadingPieces,
+        downloading_peers       = DownloadingPeers,
+        peer_id                 = PeerId,
+        hash                    = Hash,
+        end_game                = CurrentEndGame,
+        avg_block_download_time = AvgBlockDownloadTime
     } = State,
     StartPieceDownloadingFun = fun (Pieces, Ip, Port, EndGame) ->
         lists:foldl(
@@ -722,12 +877,12 @@ assign_peers([{IpPort, Ids} | T], DownloadingPeers, DownloadingPieces, State) ->
                     downloading_pieces = AccDownloadingPieces,
                     downloading_peers  = AccDownloadingPeers
                 } = AccState,
-                {ok, Pid} = erltorrent_downloader:start(FileName, Ip, Port, PeerId, Hash, Piece, EndGame),
+                {ok, Pid} = erltorrent_downloader:start(FileName, Ip, Port, PeerId, Hash, Piece, EndGame, AvgBlockDownloadTime),
                 Ref = erltorrent_helper:do_monitor(process, Pid),
-                case EndGame of
-                    true  -> lager:info("Starting leecher under end game. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}]);
-                    false -> ok
-                end,
+%%                case EndGame of
+%%                    true  -> lager:info("Starting leecher under end game. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}]);
+%%                    false -> ok
+%%                end,
                 %
                 % Make new downloading pieces
                 NewDownloadingPieces = [
@@ -751,10 +906,10 @@ assign_peers([{IpPort, Ids} | T], DownloadingPeers, DownloadingPieces, State) ->
             Pieces
         )
     end,
-    case CurrentEndGame of
-        true  -> lager:info("Opened sockets under end game mode=~p", [length(DownloadingPeers)]);
-        false -> ok
-    end,
+%%    case CurrentEndGame of
+%%        true  -> lager:info("Opened sockets under end game mode=~p", [length(DownloadingPeers)]);
+%%        false -> ok
+%%    end,
     NewState = case {CurrentEndGame, (lists:member(IpPort, DownloadingPeers) orelse (length(DownloadingPeers) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT))} of
        Res when Res =:= {true, false}; % If `end game` is on - limit doesn't matter.
                 Res =:= {true, true};  % If `end game` is on - limit doesn't matter.
@@ -766,7 +921,7 @@ assign_peers([{IpPort, Ids} | T], DownloadingPeers, DownloadingPieces, State) ->
                 Pieces = [_|_] ->
                     StartPieceDownloadingFun(Pieces, Ip, Port, false);
                 [] ->
-                    lager:info("End game mode is enabled!"),
+%%                    lager:info("End game mode is enabled!"),
                     case find_end_game_piece(State, Ids) of
                         Pieces ->
                             StartPieceDownloadingFun(Pieces, Ip, Port, true);
@@ -842,7 +997,7 @@ find_end_game_piece(State = #state{}, Ids) ->
     } = State,
     lists:foldl(
         fun
-            (_Id, Acc) when length(Acc) >= 30 ->
+            (_Id, Acc) when length(Acc) >= 1 ->
                 Acc;
             (Id, Acc) ->
                 case lists:keysearch(Id, #downloading_piece.piece_id, DownloadingPieces) of
@@ -863,7 +1018,7 @@ find_end_game_piece(State = #state{}, Ids) ->
                 end
         end,
         [],
-        Ids
+        erltorrent_helper:shuffle_list(Ids)
     ).
 
 

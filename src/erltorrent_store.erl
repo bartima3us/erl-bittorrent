@@ -25,6 +25,7 @@
     mark_piece_completed/2,
     mark_piece_new/3,
     update_blocks_time/6,
+    read_blocks_time/1,
     read_blocks_time/2
 ]).
 
@@ -166,8 +167,26 @@ update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
     mnesia:ets(Fun).
 
 
+%%  @doc
+%%  Read all blocks time
 %%
-%%
+read_blocks_time(Hash) ->
+    MatchHead = #erltorrent_store_peer{
+        hash        = Hash,
+        blocks_time = '$1',
+        _           = '_'
+    },
+    Fun = fun() ->
+        mnesia:select(erltorrent_store_peer, [{MatchHead, [], ['$1']}])
+    end,
+    case mnesia:ets(Fun) of
+        Result -> lists:flatten(Result);
+        []     -> []
+    end.
+
+
+%%  @doc
+%%  Read peer blocks time
 %%
 read_blocks_time(Hash, IpPort) ->
     MatchHead = #erltorrent_store_peer{
