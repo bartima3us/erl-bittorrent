@@ -1,10 +1,10 @@
 %%%-------------------------------------------------------------------
-%%% @author $author
-%%% @copyright (C) $year, $company
+%%% @author bartimaeus
+%%% @copyright (C) 2019, sarunas.bartusevicius@gmail.com
 %%% @doc
 %%%
 %%% @end
-%%% Created : $fulldate
+%%% Created : 06. May 2019 19.35
 %%%-------------------------------------------------------------------
 -module(erltorrent_peers_crawler).
 -compile([{parse_transform, lager_transform}]).

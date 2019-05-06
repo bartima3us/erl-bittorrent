@@ -4,15 +4,16 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 06. May 2019 19.35
+%%% Created : 06. May 2019 00.37
 %%%-------------------------------------------------------------------
--module(erltorrent_peers_mgr_sup).
+-module(erltorrent_torrent_sup).
+-compile([{parse_transform, lager_transform}]).
 -author("bartimaeus").
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/1]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -21,31 +22,32 @@
 %% API functions
 %% ===================================================================
 
-start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+start_link(TorrentName) ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, [TorrentName]).
+
+
 
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
 
-init([]) ->
-    PeersSup = #{
-        id          => peers_sup,
-        start       => {erltorrent_peers_sup, start_link, []},
+init([TorrentName]) ->
+    Server = #{
+        id          => erltorrent_leech_server,
+        start       => {erltorrent_leech_server, start_link, [TorrentName]},
+        restart     => permanent,
+        shutdown    => 5000,
+        type        => worker,
+        modules     => [erltorrent_leech_server]
+    },
+    PeerSup = #{
+        id          => peers_mgr_sup,
+        start       => {erltorrent_peers_mgr_sup, start_link, []},
         restart     => permanent,
         shutdown    => infinity,
         type        => supervisor,
-        modules     => [erltorrent_peers_sup]
+        modules     => [erltorrent_peers_mgr_sup]
     },
-    CrawlerSup = #{
-        id          => peers_crawler_sup,
-        start       => {erltorrent_peers_crawler_sup, start_link, []},
-        restart     => permanent,
-        shutdown    => infinity,
-        type        => supervisor,
-        modules     => [erltorrent_peers_crawler_sup]
-    },
-    % Because Crawler uses Peers Sup
-    {ok, {{rest_for_one, 5, 10}, [PeersSup, CrawlerSup]}}.
+    {ok, {{one_for_one, 5, 10}, [Server, PeerSup]}}.
 
 

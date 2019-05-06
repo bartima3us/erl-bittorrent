@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : 23. Jun 2018 08.33
 %%%-------------------------------------------------------------------
--module(erltorrent_downloader).
+-module(erltorrent_leecher).
 -compile([{parse_transform, lager_transform}]).
 -author("bartimaeus").
 
@@ -16,7 +16,7 @@
 -include("erltorrent_store.hrl").
 
 -define(STOPPED_PEER_MULTIPLIER, 5).
--define(SLOW_PEER_MULTIPLIER, 1.5).
+-define(SLOW_PEER_MULTIPLIER, 1.6).
 
 %% API
 -export([
@@ -167,7 +167,7 @@ handle_call(get_speed, _From, State) ->
     } = State,
     BlockTimes = erltorrent_store:read_blocks_time(Hash, {PeerIp, Port}),
     {Time, Blocks} = lists:foldl(
-        % @todo DRY - same fun in erltorrent_server:get_avg_block_download_time/1
+        % @todo DRY - same fun in erltorrent_leech_server:get_avg_block_download_time/1
         fun (BlockTime, {AccTime, AccBlocks}) ->
             #erltorrent_store_block_time{
                 requested_at = RequestedAt,
@@ -293,7 +293,7 @@ handle_info(request_piece, State) ->
             case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
-                    erltorrent_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime, EndGame},
+                    erltorrent_leech_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime, EndGame},
                     case EndGame of
                         true  -> erltorrent_helper:do_exit(normal);
                         false -> ok
@@ -302,7 +302,7 @@ handle_info(request_piece, State) ->
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
                     ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
-                    erltorrent_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
+                    erltorrent_leech_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
                     false
             end
     end,

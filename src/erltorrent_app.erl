@@ -1,4 +1,13 @@
+%%%-------------------------------------------------------------------
+%%% @author bartimaeus
+%%% @copyright (C) 2019, sarunas.bartusevicius@gmail.com
+%%% @doc
+%%%
+%%% @end
+%%% Created : 18. Feb 2018 14.04
+%%%-------------------------------------------------------------------
 -module(erltorrent_app).
+-author("bartimaeus").
 
 -behaviour(application).
 

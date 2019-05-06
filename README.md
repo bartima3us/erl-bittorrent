@@ -25,5 +25,5 @@ Put .torrent file into 'torrents' directory. Then:
 
 ```
 $ make start
-erltorrent_server:download("TorrentName.torrent").
+erltorrent:download("TorrentName.torrent").
 ```

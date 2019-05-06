@@ -1,5 +1,14 @@
+%%%-------------------------------------------------------------------
+%%% @author bartimaeus
+%%% @copyright (C) 2019, sarunas.bartusevicius@gmail.com
+%%% @doc
+%%%
+%%% @end
+%%% Created : 06. May 2019 19.35
+%%%-------------------------------------------------------------------
 -module(erltorrent_peers_sup).
 -compile([{parse_transform, lager_transform}]).
+-author("bartimaeus").
 
 -behaviour(supervisor).
 

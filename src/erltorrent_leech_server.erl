@@ -1,12 +1,12 @@
 %%%-------------------------------------------------------------------
-%%% @author $author
-%%% @copyright (C) $year, $company
+%%% @author bartimaeus
+%%% @copyright (C) 2019, sarunas.bartusevicius@gmail.com
 %%% @doc
 %%%
 %%% @end
-%%% Created : $fulldate
+%%% Created : 18. Feb 2018 14.04
 %%%-------------------------------------------------------------------
--module(erltorrent_server).
+-module(erltorrent_leech_server).
 -compile([{parse_transform, lager_transform}]).
 -author("bartimaeus").
 
@@ -17,8 +17,7 @@
 
 %% API
 -export([
-    start_link/0,
-    download/1,
+    start_link/1,
     piece_peers/1,
     downloading_piece/1,
     all_pieces_except_completed/0,
@@ -90,11 +89,9 @@
 
 % make start
 % application:start(erltorrent).
-% erltorrent_server:download("[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent").
-% erltorrent_server:piece_peers(4).
-% erltorrent_server:downloading_piece(0).
-
-
+% erltorrent_leech_server:download("[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent").
+% erltorrent_leech_server:piece_peers(4).
+% erltorrent_leech_server:downloading_piece(0).
 
 %%%===================================================================
 %%% API
@@ -159,8 +156,8 @@ all_pieces_except_completed() ->
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
-    gen_server:start({local, ?SERVER}, ?MODULE, [], []).
+start_link(TorrentName) ->
+    gen_server:start({local, ?SERVER}, ?MODULE, [TorrentName], []).
 
 
 
@@ -179,7 +176,8 @@ start_link() ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->
+init(TorrentName) ->
+    ok = download(TorrentName),
     {ok, #state{}}.
 
 
@@ -877,7 +875,7 @@ assign_peers([{IpPort, Ids} | T], DownloadingPeers, DownloadingPieces, State) ->
                     downloading_pieces = AccDownloadingPieces,
                     downloading_peers  = AccDownloadingPeers
                 } = AccState,
-                {ok, Pid} = erltorrent_downloader:start(FileName, Ip, Port, PeerId, Hash, Piece, EndGame, AvgBlockDownloadTime),
+                {ok, Pid} = erltorrent_leecher:start(FileName, Ip, Port, PeerId, Hash, Piece, EndGame, AvgBlockDownloadTime),
                 Ref = erltorrent_helper:do_monitor(process, Pid),
 %%                case EndGame of
 %%                    true  -> lager:info("Starting leecher under end game. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}]);
