@@ -16,7 +16,7 @@
 -export([
     start_link/0,
     start_child/1,
-    stop_child/0
+    stop_child/1
 ]).
 
 %% Supervisor callbacks
@@ -31,11 +31,20 @@ start_link() ->
 
 
 start_child(TorrentName) ->
-    supervisor:start_child(?MODULE, [TorrentName]).
+    TorrentSupSpec = #{
+        id          => {erltorrent_torrent_sup, TorrentName},
+        start       => {erltorrent_torrent_sup, start_link, [TorrentName]},
+        restart     => permanent,
+        shutdown    => infinity,
+        type        => supervisor,
+        modules     => [erltorrent_torrent_sup]
+    },
+    supervisor:start_child(?MODULE, TorrentSupSpec).
 
 
-stop_child() ->
-    supervisor:delete_child(?MODULE, erltorrent_torrent_sup).
+stop_child(TorrentName) ->
+    supervisor:terminate_child(?MODULE, {erltorrent_torrent_sup, TorrentName}),
+    supervisor:delete_child(?MODULE, {erltorrent_torrent_sup, TorrentName}).
 
 
 
@@ -44,14 +53,6 @@ stop_child() ->
 %% ===================================================================
 
 init([]) ->
-    TorrentSup = #{
-        id          => erltorrent_torrent_sup,
-        start       => {erltorrent_torrent_sup, start_link, []},
-        restart     => permanent,
-        shutdown    => infinity,
-        type        => supervisor,
-        modules     => [erltorrent_torrent_sup]
-    },
-    {ok, {{simple_one_for_one, 5, 10}, [TorrentSup]}}.
+    {ok, {{one_for_one, 5, 10}, []}}.
 
 

@@ -65,6 +65,7 @@
 }).
 
 -record(state, {
+    torrent_name                     :: string(),
     file_name                        :: string(),
     piece_peers        = dict:new()  :: dict:type(), % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
     peer_pieces        = dict:new()  :: dict:type(), % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
@@ -100,11 +101,8 @@
 %% @doc
 %% Start download
 %%
-download(TorrentName) when is_binary(TorrentName) ->
-    download(binary_to_list(TorrentName));
-
-download(TorrentName) when is_list(TorrentName) ->
-    gen_server:cast(?SERVER, {download, TorrentName}).
+download() ->
+    gen_server:cast(?SERVER, download).
 
 
 %% @doc
@@ -177,8 +175,8 @@ start_link(TorrentName) ->
 %% @end
 %%--------------------------------------------------------------------
 init(TorrentName) ->
-    ok = download(TorrentName),
-    {ok, #state{}}.
+    ok = download(),
+    {ok, #state{torrent_name = TorrentName}}.
 
 
 %%--------------------------------------------------------------------
@@ -242,7 +240,7 @@ handle_call(_Request, _From, State) ->
 %%--------------------------------------------------------------------
 % @todo check if such file not exist in Mnesia before start downloading
 % @todo constantly delete file from Mnesia if it not exists in download folder anymore. Also check it on app start.
-handle_cast({download, TorrentName}, State = #state{piece_peers = PiecePeers}) ->
+handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = PiecePeers}) ->
     % @todo need to scrap data from tracker and update state constantly
     File = filename:join(["torrents", TorrentName]),
     {ok, Bin} = file:read_file(File),
@@ -608,10 +606,10 @@ do_speed_checking(State, Progress) ->
 is_end(#state{pieces_left = [_|_]}) ->
     ok;
 
-is_end(#state{file_name = FileName, pieces_left = []}) ->
+is_end(#state{torrent_name = TorrentName, file_name = FileName, pieces_left = []}) ->
     ok = erltorrent_helper:concat_file(FileName),
     lager:info("Download completed!"),
-    exit(completed).
+    erltorrent_sup:stop_child(TorrentName).
 
 
 %%

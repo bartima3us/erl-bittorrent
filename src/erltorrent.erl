@@ -16,5 +16,8 @@
 %% @doc
 %% Start download
 %%
-download(TorrentName) ->
+download(TorrentName) when is_binary(TorrentName) ->
+    download(binary_to_list(TorrentName));
+
+download(TorrentName) when is_list(TorrentName) ->
     erltorrent_sup:start_child(TorrentName).
