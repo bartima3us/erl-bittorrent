@@ -16,7 +16,7 @@
 -include("erltorrent_store.hrl").
 
 -define(STOPPED_PEER_MULTIPLIER, 5).
--define(SLOW_PEER_MULTIPLIER, 1.6).
+-define(SLOW_PEER_MULTIPLIER, 1.7).
 
 %% API
 -export([
@@ -240,17 +240,21 @@ handle_info(start, State) ->
         true  -> erltorrent_helper:shuffle_list(Blocks0);
         false -> Blocks0
     end,
-    {ok, Socket} = do_connect(PeerIp, Port),
-    {ok, ParserPid} = erltorrent_packet:start_link(),
-    ok = erltorrent_message:handshake(Socket, PeerId, Hash),
-    ok = erltorrent_helper:get_packet(Socket),
-    NewState = State#state{
-        socket = Socket,
-        parser_pid = ParserPid,
-        piece_data = PieceData#piece{blocks = Blocks1}
-    },
-    ok = erltorrent_peer_events:add_sup_handler({PieceId, PeerIp, Port}, [self(), PieceId]),
-    {noreply, NewState};
+    case do_connect(PeerIp, Port) of
+        {ok, Socket} ->
+            {ok, ParserPid} = erltorrent_packet:start_link(),
+            ok = erltorrent_message:handshake(Socket, PeerId, Hash),
+            ok = erltorrent_helper:get_packet(Socket),
+            NewState = State#state{
+                socket = Socket,
+                parser_pid = ParserPid,
+                piece_data = PieceData#piece{blocks = Blocks1}
+            },
+            ok = erltorrent_peer_events:add_sup_handler({PieceId, PeerIp, Port}, [self(), PieceId]),
+            {noreply, NewState};
+        {error, Reason} ->
+            {stop, Reason, State}
+    end;
 
 %% @doc
 %% Request for a blocks from peer
@@ -280,12 +284,13 @@ handle_info(request_piece, State) ->
             % @todo make a request for 5 blocks at once (UPDATE: strange, pipeline is not effective)
             % If not, make requests for blocks
             {ok, {NextLength, OffsetBin}} = get_request_data(NextBlockId, PieceLength),
-            ok = case erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength) of
+            case erltorrent_message:request_piece(Socket, PieceId, OffsetBin, NextLength) of
                 {error, closed} ->
-                    exit(socket_error);
+                    {stop, socket_error, State};
                 ok ->
                     erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, NextBlockId, erltorrent_helper:get_milliseconds_timestamp(), requested_at),
-                    erltorrent_helper:get_packet(Socket)
+                    erltorrent_helper:get_packet(Socket),
+                    {noreply, State}
             end;
         []    ->
             %
@@ -295,25 +300,22 @@ handle_info(request_piece, State) ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
                     erltorrent_leech_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime, EndGame},
                     case EndGame of
-                        true  -> erltorrent_helper:do_exit(normal);
-                        false -> ok
-                    end,
-                    false;
+                        true  -> {stop, normal, State};
+                        false -> {noreply, State}
+                    end;
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
                     ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
                     erltorrent_leech_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
-                    false
+                    {noreply, State}
             end
-    end,
-    {noreply, State};
+    end;
 
 %% @doc
 %% If `unchoke` tries limit exceeded - kill that process
 %% @todo need to implement give_up
 handle_info({tcp, _Port, _Packet}, State = #state{give_up_limit = 0}) ->
-    erltorrent_helper:do_exit(self(), give_up),
-    {noreply, State};
+    {stop, give_up, State};
 
 %% @doc
 %% Handle incoming packets.
@@ -507,10 +509,9 @@ handle_info({block_downloaded, BlockId}, State) ->
 %%
 handle_info({check_speed, AvgSpeed}, State) ->
     case get_speed_status(State, AvgSpeed) of
-        too_slow -> exit(too_slow);
-        ok       -> ok
-    end,
-    {noreply, State};
+        too_slow -> {stop, too_slow, State};
+        ok       -> {noreply, State}
+    end;
 
 
 %% @doc
@@ -559,12 +560,10 @@ do_connect(PeerIp, Port) ->
     case gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 1000) of
         {error, emfile} ->
             lager:info("File descriptor is exhausted. Can't open new a socket for leecher."),
-            exit(shutdown);
-        {error, timeout} ->
+            {error, shutdown};
+        {error, _Error} ->
             % @todo what todo on timeout? Especially if it becomes constantly? Maybe freeze such peer
-            exit(socket_error);
-        {error, econnrefused} ->
-            exit(socket_error);
+            {error, socket_error};
         Result ->
             Result
     end.
