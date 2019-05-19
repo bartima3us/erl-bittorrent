@@ -21,3 +21,5 @@ download(TorrentName) when is_binary(TorrentName) ->
 
 download(TorrentName) when is_list(TorrentName) ->
     erltorrent_sup:start_child(TorrentName).
+
+

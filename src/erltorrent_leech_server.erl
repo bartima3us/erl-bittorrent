@@ -85,7 +85,7 @@
     pieces_left        = []          :: [integer()],
     avg_block_download_time = false  :: integer() | false,
     assign_peers_timer      = false,
-    speed_checking_steps     = []     :: [integer()]
+    speed_checking_steps     = []    :: [integer()]
 }).
 
 % make start
@@ -247,6 +247,8 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
     Pieces       = dict:fetch(<<"pieces">>, Info),
+%%    {list, Files}     = dict:fetch(<<"files">>, Info),
+%%    lager:info("xxxxxxxxx Files=~p", [Files]),
     FullSize     = dict:fetch(<<"length">>, Info),
     PieceSize    = dict:fetch(<<"piece length">>, Info),
     AnnounceLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
