@@ -136,7 +136,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 %% Connect to peer, make a handshake
 %%
-handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = TryAfter}) ->
+handle_info(start, State = #state{peer_ip = Ip, port = Port, peer_id = PeerId, hash = Hash, try_after = TryAfter}) ->
     NewState = case do_connect(State) of
         {ok, Socket} ->
             ok = erltorrent_message:handshake(Socket, PeerId, Hash),
@@ -148,7 +148,8 @@ handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = Try
         {error, Error} when Error =:= econnrefused;
                             Error =:= ehostunreach;
                             Error =:= etimedout;
-                            Error =:= enetunreach -> % @todo maybe need particular behavior on particular error?
+                            Error =:= enetunreach;
+                            Error =:= timeout -> % @todo maybe need particular behavior on particular error?
             NewTryAfter = case TryAfter < 10000 of
                 true  -> TryAfter + 1000;
                 false -> TryAfter
@@ -247,6 +248,6 @@ do_connect(State) ->
         peer_ip = PeerIp,
         port    = Port
     } = State,
-    gen_tcp:connect(PeerIp, Port, [{active, false}, binary]).
+    gen_tcp:connect(PeerIp, Port, [{active, false}, binary], 5000).
 
 

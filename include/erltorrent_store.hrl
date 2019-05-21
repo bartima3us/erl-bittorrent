@@ -17,6 +17,7 @@
 
 -record(erltorrent_store_block_time, {
     id              :: {piece_id_int(), block_id_int()},
+    piece_id        :: piece_id_int(),
     requested_at    :: integer(),
     received_at     :: integer()
 }).

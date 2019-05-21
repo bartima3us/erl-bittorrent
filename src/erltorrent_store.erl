@@ -26,7 +26,8 @@
     mark_piece_new/3,
     update_blocks_time/6,
     read_blocks_time/1,
-    read_blocks_time/2
+    read_blocks_time/2,
+    read_blocks_time/3
 ]).
 
 -export([
@@ -126,7 +127,8 @@ update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
                 NewBlocksTime = case lists:keysearch(Id, #erltorrent_store_block_time.id, BlocksTime) of
                     false ->
                         BlockTime = #erltorrent_store_block_time{
-                            id = Id
+                            id       = Id,
+                            piece_id = PieceId
                         },
                         NewBlockTime = case Field of
                             requested_at -> BlockTime#erltorrent_store_block_time{requested_at = Time};
@@ -147,7 +149,8 @@ update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
                 UpdatedPeer;
             []       ->
                 BlockTime = #erltorrent_store_block_time{
-                    id = Id
+                    id       = Id,
+                    piece_id = PieceId
                 },
                 Peer = #erltorrent_store_peer{
                     id          = os:timestamp(),
@@ -202,6 +205,18 @@ read_blocks_time(Hash, IpPort) ->
         [Result] -> Result;
         []       -> []
     end.
+
+
+%%  @doc
+%%  Read peer blocks time
+%%
+read_blocks_time(Hash, IpPort, PieceId) ->
+    lists:filter(
+        fun (#erltorrent_store_block_time{piece_id = PI})  ->
+            PI == PieceId
+        end,
+        read_blocks_time(Hash, IpPort)
+    ).
 
 
 %% @doc

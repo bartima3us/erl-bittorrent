@@ -43,8 +43,8 @@ start_child(TorrentName) ->
 
 
 stop_child(TorrentName) ->
-    supervisor:terminate_child(?MODULE, {erltorrent_torrent_sup, TorrentName}),
-    supervisor:delete_child(?MODULE, {erltorrent_torrent_sup, TorrentName}).
+    ok = supervisor:terminate_child(?MODULE, {erltorrent_torrent_sup, TorrentName}),
+    ok = supervisor:delete_child(?MODULE, {erltorrent_torrent_sup, TorrentName}).
 
 
 

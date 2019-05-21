@@ -1,0 +1,20 @@
+Atfiltruoju Wireshark: bittorrent and (ip.src == 188.243.48.85 or ip.dst == 188.243.48.85)
+Nustatau: View -> Time display format -> "Seconds since previous displayed packet"
+Sužymiu "Piece packetus" su ctrl + m
+Eksportuoju į CSV
+Su Excel susumuoju: =SUM(...).
+
+---------------------
+
+Suma iš Wireshark: 9.480455646 s
+PieceId = 1, IpPort={{109,169,162,254},43229}, parse time=0.043232 s, completion=0.54%, blocks time=9.572 s, processing time=0.158 s, requesting time=0.014 s, overall time=10.913 s
+
+Suma iš Wireshark: 4.813403976 s
+PieceId = 0, IpPort={{188,243,48,85},15224}, parse time=0.030327 s, completion=0.13%, blocks time=4.913 s, processing time=0.146 s, requesting time=0.011 s, overall time=6.003 s
+
+Suma iš Wireshark: 9.167439228 s
+PieceId = 2, IpPort={{176,99,124,216},44424}, parse time=0.036472 s, completion=0.27%, blocks time=9.294 s, processing time=0.163 s, requesting time=0.012 s, overall time=9.869 s
+
+---------------------
+
+Viską išsprendė teisingas pipeline - pranešimų sujungimas į vieną paketą. Parinkti statistiką: pipeline vs ne pipeline.

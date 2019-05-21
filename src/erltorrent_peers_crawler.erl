@@ -32,7 +32,9 @@
     peer_id         :: binary(),
     full_size       :: integer(),
     piece_size      :: integer(),
-    crawl_after     :: integer() % ms
+    crawl_after     :: integer(), % ms
+    downloaded    = 0  :: integer(),
+    left
 }).
 
 
@@ -136,12 +138,19 @@ handle_info(crawl, State) ->
         peer_id         = PeerId,
         full_size       = FullSize,
         piece_size      = PieceSize,
-        crawl_after     = CrawlAfter
+        downloaded      = Downloaded
     } = State,
     EncodedHash = erltorrent_helper:urlencode(Hash),
-    {ok, {dict, Result}} = connect_to_tracker(AnnounceLink, EncodedHash, PeerId, FullSize),
+    Left = FullSize - Downloaded,
+    {ok, {dict, Result}} = connect_to_tracker(AnnounceLink, EncodedHash, PeerId, Left, Downloaded),
     PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
-    lager:info("Peers list = ~p", [PeersIP]),
+    CrawlAfter = dict:fetch(<<"interval">>, Result),
+%%    lager:info("Crawl min interval = ~p", [dict:fetch(<<"min interval">>, Result)]),
+%%    lager:info("Peers list = ~p", [PeersIP]),
+    case dict:is_key(<<"failure reason">>, Result) of
+        true  -> lager:info("Failure reason = ~p", [dict:fetch(<<"failure reason">>, Result)]);
+        false -> ok
+    end,
 %%    AllowedPorts = [
 %%        29856,
 %%        51904,
@@ -230,10 +239,10 @@ get_peers(PeersList, Result) ->
 %% @priv
 %% Make HTTP connect to tracker to get information
 %%
-connect_to_tracker(TrackerLink, Hash, PeerId, FullSize) ->
+connect_to_tracker(TrackerLink, Hash, PeerId, FullSize, Downloaded) ->
     inets:start(),
     Separator = case string:str(TrackerLink, "?") of 0 -> "?"; _ -> "&" end,
-    FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=54761&uploaded=0&downloaded=0&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
+    FullLink = TrackerLink ++ Separator ++ "info_hash=" ++ Hash ++ "&peer_id=" ++ PeerId ++ "&port=54761&uploaded=0&downloaded=" ++ integer_to_list(Downloaded) ++ "&left=" ++ erltorrent_helper:convert_to_list(FullSize) ++ "&corrupt=0&key=4ACCCA00&event=started&numwant=200&compact=1&no_peer_id=1&supportcrypto=1&redundant=0",
     % Lets imitate Deluge!
     Headers = [
         {"User-Agent", "Deluge 1.3.12"}, % @todo need to check if it is needed
