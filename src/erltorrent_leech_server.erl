@@ -389,16 +389,6 @@ handle_info(assign_peers, State = #state{}) ->
 %%    NewPeers = lists:sort(lists:keyreplace(IpPort, #peer.ip_port, Peers, Peer#peer{rating = undefined, count_blocks = 0, time = 0})),
 %%    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers, give_up_limit = NewGiveUpLimit, peers = NewPeers}};
 
-%%handle_info({completed, IpPort, PieceId, _DownloaderPid, ParseTime, _EndGame = true, OverallTime}, State) ->
-%%    NewState = remove_downloaded_piece_siblings(State, PieceId),
-%%    Progress = get_completion_percentage(NewState),
-%%    [Completion] = io_lib:format("~.2f", [Progress]),
-%%    lager:info("Completed under end game! PieceId = ~p, IpPort=~p, parse time=~p s, completion=~p%, overall time = ~p~n", [PieceId, IpPort, (ParseTime / 1000000), list_to_float(Completion), OverallTime]),
-%%    is_end(NewState),
-%%    NewState1 = do_speed_checking(NewState, Progress),
-%%    self() ! assign_peers,
-%%    {noreply, NewState1};
-
 handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, _EndGame, OverallTime}, State) ->
     #state{
         hash                    = Hash,
@@ -626,106 +616,6 @@ is_end(#state{torrent_name = TorrentName, file_name = FileName, pieces_left = []
 %%
 %%
 %%
-remove_downloaded_piece_siblings(State, DownloadedPieceId) ->
-    #state{
-        downloading_pieces = DownloadingPieces,
-        downloading_peers  = DownloadingPeers,
-        pieces_left        = PiecesLeft
-    } = State,
-    {NewDownloadingPieces, RemovedPeers} = lists:foldl(
-        fun
-            (DP = #downloading_piece{peer = Peer, pid = Pid, piece_id = PieceId}, {DPAcc, IpAcc}) when
-                PieceId =:= DownloadedPieceId
-                ->
-                erltorrent_helper:do_exit(Pid, kill),
-                {[DP#downloading_piece{status = completed} | DPAcc], [Peer | IpAcc]};
-            (DP, {DPAcc, IpAcc}) ->
-                {[DP | DPAcc], IpAcc}
-        end,
-        {[], []},
-        DownloadingPieces
-    ),
-    NewDownloadingPeers = DownloadingPeers -- RemovedPeers,
-    NewPiecesLeft       = PiecesLeft -- [DownloadedPieceId],
-    State#state{
-        downloading_pieces = NewDownloadingPieces,
-        downloading_peers  = NewDownloadingPeers,
-        pieces_left        = NewPiecesLeft
-    }.
-
-%%
-%%
-%% @todo search only in the same peers list (with same pieces) as IpPort
-find_slower_peer(IpPort, State) ->
-    #state{
-        hash               = Hash,
-        downloading_pieces = DownloadingPieces
-    } = State,
-    DPP = lists:filtermap(
-        fun
-            (#downloading_piece{peer = DPIpPort, status = downloading}) ->
-                case get_peer_power(Hash, DPIpPort) of
-                    #peer_power{time = 0, blocks_count = BC} ->
-                        {true, {?SUPER_SLOW, DPIpPort}};
-                    #peer_power{time = T, blocks_count = BC} ->
-                        {true, {BC / T, DPIpPort}}
-                end;
-            (#downloading_piece{}) ->
-                false
-        end,
-        DownloadingPieces
-    ),
-    % Slowest in the beginning
-    SortedDPP = lists:reverse(lists:sort(DPP)),
-    {value, {SearchingPP, _}} = lists:keysearch(IpPort, 2, SortedDPP),
-    lager:info("SortedDPP = ~p", [SortedDPP]),
-    Slower = lists:foldl(
-        fun
-            ({_Power, _Peer},  Acc) when Acc =/= false ->
-                Acc;
-            ({_Power,  Peer},  Acc) when Peer =:= IpPort ->
-                Acc;
-            ({ Power, _Peer},  Acc) when Power =< SearchingPP ->
-                Acc;
-            ({0,      _Peer},  Acc) ->
-                Acc;
-            ({_Power,  Peer}, _Acc) ->
-                Peer
-        end,
-        false,
-        SortedDPP
-    ),
-    lager:info("---------------------------"),
-    Slower.
-
-
-%%
-%%
-%%
-get_peer_power(Hash, IpPort) ->
-    BlockTimes = erltorrent_store:read_blocks_time(Hash, IpPort),
-    % @todo Maybe don't recount from beginning every time?
-    NewPeerPower = lists:foldl(
-        fun (BlockTime, PP = #peer_power{time = T, blocks_count = BC}) ->
-            #erltorrent_store_block_time{
-                requested_at = RequestedAt,
-                received_at  = ReceivedAt
-            } = BlockTime,
-            case ReceivedAt of
-                undefined  -> PP; % @todo Need to add some fake ReceivedAt if it was requested long time ago
-                ReceivedAt -> PP#peer_power{time = T + (ReceivedAt - RequestedAt), blocks_count = BC + 1}
-            end
-        end,
-        #peer_power{peer = IpPort, time = 0, blocks_count = 0},
-        BlockTimes
-    ),
-    lager:info("IpPort (~p) power = ~p~n", [IpPort, NewPeerPower]),
-    NewPeerPower.
-
-
-%%
-%%
-%%
 get_avg_block_download_time(Hash) ->
     BlockTimes = erltorrent_store:read_blocks_time(Hash),
     % @todo Maybe don't recount from beginning every time?
@@ -754,19 +644,6 @@ get_avg_block_download_time(Hash) ->
 
 
 %% @doc
-%% Get still not started downloading pieces
-%%
-get_not_downloading_pieces(DownloadingPieces) ->
-    lists:filter(
-        fun
-            (#downloading_piece{status = false}) -> true;
-            (#downloading_piece{status = _})     -> false
-        end,
-        DownloadingPieces
-    ).
-
-
-%% @doc
 %% Get currently downloading pieces
 %%
 get_downloading_pieces(DownloadingPieces) ->
@@ -774,32 +651,6 @@ get_downloading_pieces(DownloadingPieces) ->
         fun
             (#downloading_piece{status = downloading}) -> true;
             (#downloading_piece{status = _})           -> false
-        end,
-        DownloadingPieces
-    ).
-
-
-%% @doc
-%% Get downloading pieces
-%%
-get_all_except_completed_pieces(DownloadingPieces) ->
-    lists:filter(
-        fun
-            (#downloading_piece{status = completed}) -> false;
-            (#downloading_piece{status = _})         -> true
-        end,
-        DownloadingPieces
-    ).
-
-
-%% @doc
-%% Get completed pieces
-%%
-get_completed_pieces(DownloadingPieces) ->
-    lists:filter(
-        fun
-            (#downloading_piece{status = completed}) -> true;
-            (#downloading_piece{status = _})         -> false
         end,
         DownloadingPieces
     ).
@@ -841,20 +692,6 @@ get_completion_percentage(State) ->
 %%        false ->
 %%            {DownloadingPieces, PiecesPeers}
 %%    end.
-
-
-%% @doc
-%% Count how many pieces are downloading at the moment
-%%
-count_downloading(DownloadingPieces) ->
-    lists:foldl(
-        fun
-            (#downloading_piece{status = downloading}, Acc) -> Acc + 1;
-            (#downloading_piece{status = _}, Acc)           -> Acc
-        end,
-        0,
-        DownloadingPieces
-    ).
 
 
 %% @doc
