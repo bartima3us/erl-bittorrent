@@ -359,7 +359,6 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, _EndGame, Ove
         peer_pieces = PeerPieces
     } = State,
     NewState0 = remove_piece_from_piece_peers(State, PieceId),
-    % @todo check is end game enabled ant not call find_not_downloading_piece/2 if so
     NewState1 = case dict:is_key(IpPort, PeerPieces) of
         true  ->
             {ok, Ids} = dict:find(IpPort, PeerPieces),
@@ -380,9 +379,10 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, _EndGame, Ove
                     lager:info("End game mode is enabled"),
                     ExtraFun = fun (_State, #downloading_piece{pid = Pid}) ->
                         erlang:unlink(Pid),
-                        erltorrent_helper:do_exit(DownloaderPid, kill)
+                        erltorrent_helper:do_exit(DownloaderPid, kill),
+                        ok
                     end,
-                    StateAcc0 = change_downloading_piece_status(NewState0, {PieceId, IpPort}, completed, ExtraFun()),
+                    StateAcc0 = change_downloading_piece_status(NewState0, {PieceId, IpPort}, completed, ExtraFun),
                     StateAcc1 = remove_from_downloading_peers(StateAcc0, IpPort),
                     StateAcc1#state{end_game = true}
             end;
