@@ -724,8 +724,7 @@ request_piece_test_() ->
         {"File is downloaded. Hash is valid.",
             fun() ->
                 State = #state{
-                    started_at   = 5,
-                    updated_at   = 10
+                    started_at   = 5
                 },
                 {noreply, State} = handle_info(request_piece, State),
                 1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
@@ -741,8 +740,7 @@ request_piece_test_() ->
         {"File is downloaded. Hash is invalid.",
             fun() ->
                 State = #state{
-                    started_at   = 5,
-                    updated_at   = 10
+                    started_at   = 5
                 },
                 {noreply, State} = handle_info(request_piece, State),
                 1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
