@@ -210,8 +210,8 @@ handle_call(all_pieces_except_completed, _From, State = #state{pieces_left = Pie
 %% @doc
 %% Handle is end checking call
 %%
-handle_call(count_downloading_pieces, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
-    {reply, length(get_downloading_pieces(DownloadingPieces)), State};
+handle_call(count_downloading_pieces, _From, State = #state{}) ->
+    {reply, length(get_downloading_pieces(State)), State};
 
 
 %%
@@ -615,25 +615,21 @@ do_speed_checking(State, Progress) ->
 %% @private
 %% Assign free peers to download pieces
 %%
-assign_peers(State = #state{peer_pieces = PeerPieces, downloading_pieces = DownloadingPieces, end_game = EndGame}) ->
-    PeerPiecesList = case EndGame of
-        false -> dict:to_list(PeerPieces);
-        true  -> erltorrent_helper:shuffle_list(dict:to_list(PeerPieces))
-    end,
-    assign_peers(PeerPiecesList, DownloadingPieces, State).
+assign_peers(State = #state{peer_pieces = PeerPieces}) ->
+    assign_peers(dict:to_list(PeerPieces), State).
 
-assign_peers([], _DownloadingPieces, State) ->
+assign_peers([], State) ->
     State;
 
-assign_peers([{IpPort, Ids} | T], DownloadingPieces, State) ->
+assign_peers([{IpPort, Ids} | T], State) ->
     #state{
         file_name               = FileName,
-        downloading_pieces      = DownloadingPieces,
         peer_id                 = PeerId,
         hash                    = Hash,
         end_game                = CurrentEndGame,
         avg_block_download_time = AvgBlockDownloadTime
     } = State,
+    % @todo maybe move this from fun because currently it is used only once
     StartPieceDownloadingFun = fun (Pieces, Ip, Port, EndGame) ->
         lists:foldl(
             fun (Piece = #piece{piece_id = PieceId, last_block_id = LastBlockId}, AccState) ->
@@ -660,8 +656,10 @@ assign_peers([{IpPort, Ids} | T], DownloadingPieces, State) ->
             Pieces
         )
     end,
-    % @todo maybe fix this
-    NewState = case {CurrentEndGame, (length(get_downloading_pieces(DownloadingPieces, IpPort)) > 0 orelse length(get_downloading_pieces(DownloadingPieces)) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT)} of
+    PeerDownloadingPieces = length(get_downloading_pieces(State, IpPort)),
+    SocketsLimitReached = length(get_downloading_pieces(State)) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT,
+    % @todo maybe fix this (I think limit is needed even in end game)
+    NewState = case {CurrentEndGame, (PeerDownloadingPieces > 0 orelse SocketsLimitReached)} of
        Res when Res =:= {true, false}; % If `end game` is on - limit doesn't matter.
                 Res =:= {true, true};  % If `end game` is on - limit doesn't matter.
                 Res =:= {false, false} % If `end game` is off - limit can't be exhausted.
@@ -676,10 +674,7 @@ assign_peers([{IpPort, Ids} | T], DownloadingPieces, State) ->
        {false, true} ->
             State
     end,
-    #state{
-        downloading_pieces = UpdatedPieces
-    } = NewState,
-    assign_peers(T, UpdatedPieces, NewState).
+    assign_peers(T, NewState).
 
 
 %%
@@ -692,7 +687,7 @@ is_end(#state{torrent_name = TorrentName, file_name = FileName, pieces_left = []
     ok = erltorrent_helper:concat_file(FileName),
     ok = erltorrent_helper:delete_downloaded_pieces(FileName),
     lager:info("Download completed!"),
-    erltorrent_sup:stop_child(TorrentName).
+    erltorrent_sup:stop_child(TorrentName). % @todo fix deadlock
 
 
 %%
@@ -728,7 +723,7 @@ get_avg_block_download_time(Hash) ->
 %% @private
 %% Get currently downloading pieces
 %%
-get_downloading_pieces(DownloadingPieces) ->
+get_downloading_pieces(#state{downloading_pieces = DownloadingPieces}) ->
     lists:filter(
         fun
             (#downloading_piece{status = downloading}) -> true;
@@ -741,7 +736,7 @@ get_downloading_pieces(DownloadingPieces) ->
 %% @private
 %% Get currently downloading piece of peer
 %%
-get_downloading_pieces(DownloadingPieces, CheckingIpPort) ->
+get_downloading_pieces(#state{downloading_pieces = DownloadingPieces}, CheckingIpPort) ->
     lists:filter(
         fun
             (#downloading_piece{status = downloading, peer = IpPort}) when CheckingIpPort =:= IpPort -> true;
