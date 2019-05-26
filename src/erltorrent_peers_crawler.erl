@@ -15,7 +15,7 @@
 -include("erltorrent.hrl").
 
 %% API
--export([start_link/6]).
+-export([start_link/5]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -31,7 +31,6 @@
     hash            :: binary(),
     peer_id         :: binary(),
     full_size       :: integer(),
-    piece_size      :: integer(),
     crawl_after     :: integer(), % ms
     downloaded    = 0  :: integer(),
     left
@@ -50,8 +49,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize) ->
-    gen_server:start_link(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize], []).
+start_link(FileName, AnnounceLink, Hash, PeerId, FullSize) ->
+    gen_server:start_link(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize], []).
 
 
 
@@ -70,7 +69,7 @@ start_link(FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize]) ->
+init([FileName, AnnounceLink, Hash, PeerId, FullSize]) ->
     lager:info("Crawler is started. AnnounceLink=~p", [AnnounceLink]),
     State = #state{
         file_name       = FileName,
@@ -78,7 +77,6 @@ init([FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize]) ->
         hash            = Hash,
         peer_id         = PeerId,
         full_size       = FullSize,
-        piece_size      = PieceSize,
         crawl_after     = 10000
     },
     self() ! crawl,
@@ -137,7 +135,6 @@ handle_info(crawl, State) ->
         hash            = Hash,
         peer_id         = PeerId,
         full_size       = FullSize,
-        piece_size      = PieceSize,
         downloaded      = Downloaded
     } = State,
     EncodedHash = erltorrent_helper:urlencode(Hash),
@@ -170,7 +167,7 @@ handle_info(crawl, State) ->
 %%            (_) ->
 %%                lager:info("xxxxxxxxx PEER DISCARDED!!!!! TESTING MODE. xxxxxxxxx"),
 %%                ok
-            (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize)
+            (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize)
         end,
         PeersIP
     ),

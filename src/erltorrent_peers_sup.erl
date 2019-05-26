@@ -13,7 +13,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, add_child/6]).
+-export([start_link/0, add_child/5]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -26,11 +26,11 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 
-add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
+add_child(Peer, PeerId, Hash, FileName, FullSize) ->
     Id = {Peer, sup},
     Spec = #{
         id          => Id,
-        start       => {erltorrent_peer_sup, start_link, [Peer, PeerId, Hash, FileName, FullSize, PieceSize]},
+        start       => {erltorrent_peer_sup, start_link, [Peer, PeerId, Hash, FileName, FullSize]},
         restart     => temporary,
         shutdown    => infinity,
         type        => supervisor,

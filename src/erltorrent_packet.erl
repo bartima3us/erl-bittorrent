@@ -186,7 +186,7 @@ identify(Data) ->
 identify(<<>>, Acc) ->
     {ok, lists:reverse(Acc), undefined};
 
-%
+% @todo maybe need to remove second elements of tuple (true)...
 % Handshake
 identify(<<19, _Label:19/bytes, _ReservedBytes:8/bytes, _Hash:20/bytes, _PeerId:20/bytes, Rest/bytes>>, Acc) ->
     identify(Rest, [{handshake, true} | Acc]);

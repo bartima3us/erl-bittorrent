@@ -669,91 +669,91 @@ update_cancel_timer(EndGame, CancelAfter) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
-get_request_data_test_() ->
-    [
-        ?_assertEqual(
-            {ok, {?DEFAULT_REQUEST_LENGTH, <<0, 0, 64, 0>>}},
-            get_request_data(1, 290006769)
-        ),
-        ?_assertEqual(
-            {ok, {?DEFAULT_REQUEST_LENGTH, <<0, 1, 128, 0>>}},
-            get_request_data(6, 290006769)
-        ),
-        ?_assertEqual(
-            {ok, {1696, <<0, 1, 128, 0>>}},
-            get_request_data(6, 100000)
-        ),
-        ?_assertEqual(
-            {ok, {-14688, <<0, 1, 192, 0>>}},
-            get_request_data(7, 100000)
-        )
-    ].
-
-
-request_piece_test_() ->
-    {setup,
-        fun() ->
-            ok = meck:new([erltorrent_message, erltorrent_helper, erltorrent_store]),
-            ok = meck:expect(erltorrent_message, request_piece, ['_', '_', '_', '_'], ok),
-            ok = meck:expect(erltorrent_helper, get_packet, ['_'], ok),
-            ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], true),
-            ok = meck:expect(erltorrent_helper, delete_downloaded_piece, ['_', '_'], ok),
-            ok = meck:expect(erltorrent_helper, get_concated_piece, ['_', '_'], {ok, <<44,54,155>>}),
-            ok = meck:expect(erltorrent_store, mark_piece_completed, ['_', '_'], ok),
-            ok = meck:expect(erltorrent_store, mark_piece_new, ['_', '_'], ok)
-        end,
-        fun(_) ->
-            true = meck:validate([erltorrent_message, erltorrent_helper, erltorrent_store]),
-            ok = meck:unload([erltorrent_message, erltorrent_helper, erltorrent_store])
-        end,
-        [{"File isn't downloaded yet.",
-            fun() ->
-                State = #state{
-                },
-                {noreply, State} = handle_info(request_piece, State),
-                1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
-                1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
-                0 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
-                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', completed]),
-                0 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
-                0 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
-                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
-                0 = meck:num_calls(erltorrent_helper, get_concated_piece, ['_', '_'])
-            end
-        },
-        {"File is downloaded. Hash is valid.",
-            fun() ->
-                State = #state{
-                    started_at   = 5
-                },
-                {noreply, State} = handle_info(request_piece, State),
-                1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
-                1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
-                1 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
-                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', kill]),
-                0 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
-                0 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
-                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
-                1 = meck:num_calls(erltorrent_helper, get_concated_piece, ['_', '_'])
-            end
-        },
-        {"File is downloaded. Hash is invalid.",
-            fun() ->
-                State = #state{
-                    started_at   = 5
-                },
-                {noreply, State} = handle_info(request_piece, State),
-                1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
-                1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
-                1 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
-                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', kill]),
-                1 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
-                1 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
-                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
-                2 = meck:num_calls(erltorrent_helper, get_concated_piece, ['_', '_'])
-            end
-        }]
-    }.
+%%get_request_data_test_() ->
+%%    [
+%%        ?_assertEqual(
+%%            {ok, {?DEFAULT_REQUEST_LENGTH, <<0, 0, 64, 0>>}},
+%%            get_request_data(1, 290006769)
+%%        ),
+%%        ?_assertEqual(
+%%            {ok, {?DEFAULT_REQUEST_LENGTH, <<0, 1, 128, 0>>}},
+%%            get_request_data(6, 290006769)
+%%        ),
+%%        ?_assertEqual(
+%%            {ok, {1696, <<0, 1, 128, 0>>}},
+%%            get_request_data(6, 100000)
+%%        ),
+%%        ?_assertEqual(
+%%            {ok, {-14688, <<0, 1, 192, 0>>}},
+%%            get_request_data(7, 100000)
+%%        )
+%%    ].
+%%
+%%
+%%request_piece_test_() ->
+%%    {setup,
+%%        fun() ->
+%%            ok = meck:new([erltorrent_message, erltorrent_helper, erltorrent_store]),
+%%            ok = meck:expect(erltorrent_message, request_piece, ['_', '_', '_', '_'], ok),
+%%            ok = meck:expect(erltorrent_helper, get_packet, ['_'], ok),
+%%            ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], true),
+%%            ok = meck:expect(erltorrent_helper, delete_downloaded_piece, ['_', '_'], ok),
+%%            ok = meck:expect(erltorrent_helper, get_concated_piece, ['_', '_'], {ok, <<44,54,155>>}),
+%%            ok = meck:expect(erltorrent_store, mark_piece_completed, ['_', '_'], ok),
+%%            ok = meck:expect(erltorrent_store, mark_piece_new, ['_', '_'], ok)
+%%        end,
+%%        fun(_) ->
+%%            true = meck:validate([erltorrent_message, erltorrent_helper, erltorrent_store]),
+%%            ok = meck:unload([erltorrent_message, erltorrent_helper, erltorrent_store])
+%%        end,
+%%        [{"File isn't downloaded yet.",
+%%            fun() ->
+%%                State = #state{
+%%                },
+%%                {noreply, State} = handle_info(request_piece, State),
+%%                1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
+%%                0 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
+%%                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', completed]),
+%%                0 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
+%%                0 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
+%%                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
+%%                0 = meck:num_calls(erltorrent_helper, get_concated_piece, ['_', '_'])
+%%            end
+%%        },
+%%        {"File is downloaded. Hash is valid.",
+%%            fun() ->
+%%                State = #state{
+%%                    started_at   = 5
+%%                },
+%%                {noreply, State} = handle_info(request_piece, State),
+%%                1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
+%%                1 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', kill]),
+%%                0 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
+%%                0 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
+%%                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
+%%                1 = meck:num_calls(erltorrent_helper, get_concated_piece, ['_', '_'])
+%%            end
+%%        },
+%%        {"File is downloaded. Hash is invalid.",
+%%            fun() ->
+%%                State = #state{
+%%                    started_at   = 5
+%%                },
+%%                {noreply, State} = handle_info(request_piece, State),
+%%                1 = meck:num_calls(erltorrent_message, request_piece, ['_', '_', '_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, get_packet, ['_']),
+%%                1 = meck:num_calls(erltorrent_store, mark_piece_completed, ['_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', kill]),
+%%                1 = meck:num_calls(erltorrent_store, mark_piece_new, ['_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, delete_downloaded_piece, ['_', '_']),
+%%                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', invalid_hash]),
+%%                2 = meck:num_calls(erltorrent_helper, get_concated_piece, ['_', '_'])
+%%            end
+%%        }]
+%%    }.
 
 
 -endif.

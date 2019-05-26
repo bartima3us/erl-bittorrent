@@ -264,8 +264,8 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
         #erltorrent_store_file{file_name = FName} ->
             FName
     end,
-    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p", [FileName, PieceSize, FullSize, PiecesAmount]),
-    {ok, _} = erltorrent_peers_crawler_sup:start_child(FileName, AnnounceLink, HashBinString, PeerId, FullSize, PieceSize),
+    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString)]),
+    {ok, _} = erltorrent_peers_crawler_sup:start_child(FileName, AnnounceLink, HashBinString, PeerId, FullSize),
     LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
     LastPieceId = PiecesAmount - 1,
     % Fill empty pieces peers and downloading pieces

@@ -15,7 +15,7 @@
 -include("erltorrent.hrl").
 
 %% API
--export([start_link/6]).
+-export([start_link/5]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -30,7 +30,6 @@
 -record(state, {
     file_name       :: string(),
     full_size       :: integer(),
-    piece_size      :: integer(),
     peer_ip         :: inet:ip_address(),
     port            :: inet:port_number(),
     peer_id         :: string(),
@@ -54,8 +53,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
-    gen_server:start_link(?MODULE, [Peer, PeerId, Hash, FileName, FullSize, PieceSize], []).
+start_link(Peer, PeerId, Hash, FileName, FullSize) ->
+    gen_server:start_link(?MODULE, [Peer, PeerId, Hash, FileName, FullSize], []).
 
 
 
@@ -74,12 +73,11 @@ start_link(Peer, PeerId, Hash, FileName, FullSize, PieceSize) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize, PieceSize]) ->
+init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize]) ->
     {ok, ParserPid} = erltorrent_packet:start_link(),
     State = #state{
         file_name    = FileName,
         full_size    = FullSize,
-        piece_size   = PieceSize,
         peer_ip      = PeerIp,
         port         = Port,
         peer_id      = PeerId,
@@ -136,9 +134,10 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 %% Connect to peer, make a handshake
 %%
-handle_info(start, State = #state{peer_ip = Ip, port = Port, peer_id = PeerId, hash = Hash, try_after = TryAfter}) ->
+handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = TryAfter}) ->
     NewState = case do_connect(State) of
         {ok, Socket} ->
+            % @todo Need to start Kademlia here
             ok = erltorrent_message:handshake(Socket, PeerId, Hash),
             ok = erltorrent_helper:get_packet(Socket),
             State#state{socket = Socket};
@@ -198,7 +197,7 @@ handle_info({tcp_closed, Socket}, State = #state{socket = Socket}) ->
     lager:info("Socket closed! State=~p", [State]),
     % @todo still don't know if it's a normal error and should not be restarted...
 %%    erltorrent_helper:do_exit(self(), normal),
-    {noreply, State};
+    {stop, normal, State};
 
 %% @doc
 %% Handle unknown messages

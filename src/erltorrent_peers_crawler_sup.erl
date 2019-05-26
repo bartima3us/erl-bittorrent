@@ -13,7 +13,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_child/6]).
+-export([start_link/0, start_child/5]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -26,8 +26,8 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 
-start_child(FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize) ->
-    supervisor:start_child(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize, PieceSize]).
+start_child(FileName, AnnounceLink, Hash, PeerId, FullSize) ->
+    supervisor:start_child(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize]).
 
 
 %% ===================================================================
