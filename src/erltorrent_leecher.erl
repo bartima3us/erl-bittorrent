@@ -20,7 +20,7 @@
 
 %% API
 -export([
-    start_link/8,
+    start_link/7,
     get_speed/1,
     get_speed_blocks/1,
     get_blocks/1
@@ -47,11 +47,10 @@
     give_up_limit   = 3         :: integer(),           % @todo NEED TO IMPLEMENT. How much tries to get unchoke before giveup
     peer_id                     :: binary(),
     hash                        :: binary(),
-    started_at                  :: integer(),           % When piece downloading started in milliseconds timestamp
+    started_at                  :: integer(),                   % When piece downloading started in milliseconds timestamp
     parse_time      = 0         :: integer(),
-    end_game                    :: boolean(),           % Does this process started under `end game` mode or not
-    cancel_after                :: integer(),           % Needed for end game mode
-    cancel_timer_ref            :: reference() | undefined          % Needed for end game mode
+    timeout                     :: integer(),                   % Needed for end game mode
+    timeout_ref                 :: reference() | undefined      % Needed for end game mode
 }).
 
 
@@ -66,8 +65,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(TorrentId, PeerIp, Port, PeerId, Hash, PieceData, EndGame, AvgBlockDownloadTime) ->
-    gen_server:start_link(?MODULE, [TorrentId, PeerIp, Port, PeerId, Hash, PieceData, EndGame, AvgBlockDownloadTime], []).
+start_link(TorrentId, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime) ->
+    gen_server:start_link(?MODULE, [TorrentId, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime], []).
 
 
 
@@ -86,8 +85,8 @@ start_link(TorrentId, PeerIp, Port, PeerId, Hash, PieceData, EndGame, AvgBlockDo
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([TorrentId, PeerIp, Port, PeerId, Hash, PieceData, EndGame, CancelAfter]) ->
-    State = #state{
+init([TorrentId, PeerIp, Port, PeerId, Hash, PieceData, Timeout]) ->
+    State0 = #state{
         torrent_id              = TorrentId,
         peer_ip                 = PeerIp,
         port                    = Port,
@@ -95,12 +94,12 @@ init([TorrentId, PeerIp, Port, PeerId, Hash, PieceData, EndGame, CancelAfter]) -
         hash                    = Hash,
         piece_data              = PieceData,
         started_at              = erltorrent_helper:get_milliseconds_timestamp(),
-        end_game                = EndGame,
-        cancel_after            = CancelAfter,
-        cancel_timer_ref        = update_cancel_timer(EndGame, CancelAfter)
+        timeout                 = Timeout,
+        timeout_ref             = undefined
     },
+    State1 = update_timeout(State0),
     self() ! start,
-    {ok, State}.
+    {ok, State1}.
 
 
 %%
@@ -305,7 +304,6 @@ handle_info({tcp, _Port, Packet}, State) ->
         peer_state       = PeerState,
         hash             = Hash,
         parse_time       = OldParseTime,
-        end_game         = EndGame,
         started_at       = StartedAt
     } = State,
     #piece{
@@ -394,8 +392,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     NewState = State#state{
         piece_data          = UpdatedPieceData,
         peer_state          = NewPeerState,
-        parse_time          = OldParseTime + ParseTime,
-        cancel_timer_ref    = update_cancel_timer(State)
+        parse_time          = OldParseTime + ParseTime
     },
     case NewBlocks of
         [] ->
@@ -403,16 +400,14 @@ handle_info({tcp, _Port, Packet}, State) ->
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
                     CompletedAt = erltorrent_helper:get_milliseconds_timestamp(),
-                    erltorrent_leech_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime, EndGame, CompletedAt - StartedAt},
-                    case EndGame of
-                        true  -> {stop, normal, NewState};
-                        false -> {noreply, NewState}
-                    end;
+                    erltorrent_leech_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime, CompletedAt - StartedAt},
+                    cancel_timeout_timer(NewState),
+                    {noreply, NewState#state{timeout_ref = undefined}};
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
                     ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
                     erltorrent_leech_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
-                    {noreply, NewState}
+                    {noreply, NewState#state{timeout_ref = update_timeout(State)}}
             end;
         [_|_] ->
             ok = erltorrent_helper:get_packet(Socket),
@@ -423,7 +418,7 @@ handle_info({tcp, _Port, Packet}, State) ->
 %% @doc
 %% Switch peace to new one
 %%  @todo check handle_info(start, State) and do a bit of DRY
-handle_info({switch_piece, Piece, EndGame}, State) ->
+handle_info({switch_piece, Piece, Timeout}, State) ->
     #state{
         peer_ip     = PeerIp,
         port        = Port,
@@ -445,8 +440,7 @@ handle_info({switch_piece, Piece, EndGame}, State) ->
         give_up_limit   = 3,
         parser_pid      = ParserPid,
         started_at      = erltorrent_helper:get_milliseconds_timestamp(),
-        parse_time      = 0,
-        end_game        = EndGame
+        parse_time      = 0
     },
     erltorrent_peer_events:swap_sup_handler({OldPieceId, PeerIp, Port}, {PieceId, PeerIp, Port}, PieceId),
     self() ! request_piece,
@@ -635,30 +629,23 @@ get_speed_status(State, AvgSpeed) ->
 %%
 %%
 %%
-update_cancel_timer(State) ->
-    #state{
-        end_game         = EndGame,
-        cancel_after     = CancelAfter,
-        cancel_timer_ref = CancelTimerRef
-    } = State,
-    case is_reference(CancelTimerRef) of
-        true  -> erlang:cancel_timer(CancelTimerRef);
+cancel_timeout_timer(#state{timeout_ref = TimeoutRef}) ->
+    case is_reference(TimeoutRef) of
+        true  -> erlang:cancel_timer(TimeoutRef);
         false -> ok
+    end.
+
+
+%%
+%%
+%%
+update_timeout(State = #state{timeout = Timeout}) ->
+    cancel_timeout_timer(State),
+    Ref = case Timeout of
+        undefined   -> undefined;
+        Timeout     -> erlang:send_after(Timeout, self(), cancel)
     end,
-    case EndGame of
-        true  -> erlang:send_after(CancelAfter, self(), cancel);
-        false -> undefined
-    end.
-
-
-%%
-%%
-%%
-update_cancel_timer(EndGame, CancelAfter) ->
-    case EndGame of
-        true  -> erlang:send_after(CancelAfter, self(), cancel);
-        false -> undefined
-    end.
+    State#state{timeout_ref = Ref}.
 
 
 
