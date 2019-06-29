@@ -38,8 +38,6 @@
 ]).
 
 -define(SERVER, ?MODULE).
--define(END_GAME_PIECES_LIMIT, 5).
--define(SUPER_SLOW, 1000).
 
 -ifndef(TEST).
     -define(SOCKETS_FOR_DOWNLOADING_LIMIT, 100).
@@ -66,7 +64,7 @@
 
 -record(state, {
     torrent_name                     :: string(),
-    file_name                        :: string(),
+    files                            :: string(), % @todo make a proper type
     piece_peers        = dict:new()  :: dict:type(), % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
     peer_pieces        = dict:new()  :: dict:type(), % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
     downloading_pieces = []          :: [#downloading_piece{}],
@@ -74,8 +72,8 @@
     pieces_amount                    :: integer(),
     peer_id                          :: binary(),
     hash                             :: binary(),
-    piece_length                     :: integer(),
-    last_piece_length                :: integer(),
+    piece_size                       :: integer(), % @todo rename to piece_size
+    last_piece_size                  :: integer(),
     last_piece_id                    :: integer(),
     pieces_hash                      :: binary(),
     % @todo maybe need to persist give up limit?
@@ -173,7 +171,7 @@ start_link(TorrentName) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init(TorrentName) ->
+init([TorrentName]) ->
     process_flag(trap_exit, true),
     ok = download(),
     {ok, #state{torrent_name = TorrentName}}.
@@ -247,13 +245,7 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
     {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
     {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
     Pieces       = dict:fetch(<<"pieces">>, Info),
-%%    {list, Files}     = dict:fetch(<<"files">>, Info),
-%%    lager:info("xxxxxxxxx Files=~p", [Files]),
-    FullSize     = dict:fetch(<<"length">>, Info),
     PieceSize    = dict:fetch(<<"piece length">>, Info),
-    AnnounceLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
-    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
-    PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
     BencodedInfo = binary_to_list(erltorrent_bencoding:encode(dict:fetch(<<"info">>, MetaInfo))),
     HashBinString = crypto:hash(sha, BencodedInfo),
     FileName = case erltorrent_store:read_file(HashBinString) of
@@ -264,22 +256,47 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
         #erltorrent_store_file{file_name = FName} ->
             FName
     end,
-    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString)]),
-    {ok, _} = erltorrent_peers_crawler_sup:start_child(FileName, AnnounceLink, HashBinString, PeerId, FullSize),
-    LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
+    {FullSize, Files} = case dict:is_key(<<"length">>, Info) of
+        true  ->
+            TorrentFullSize = dict:fetch(<<"length">>, Info),
+            {TorrentFullSize, [#{from => 0, till => TorrentFullSize, filename => FileName}]};
+        false ->
+            {list, TorrentFiles} = dict:fetch(<<"files">>, Info),
+            lists:foldl(
+                fun ({dict, Dict}, {SizeAcc, FileAcc}) ->
+                    {list, FilePath} = dict:fetch(<<"path">>, Dict),
+                    TorrentFileSize = dict:fetch(<<"length">>, Dict),
+                    TorrentFile = filename:join([FileName] ++ FilePath),
+                    NewFileAcc = case FileAcc of
+                        [] ->
+                            [#{from => 0, till => TorrentFileSize, filename => TorrentFile} | FileAcc];
+                        [#{till := LastFileTill} | _]  ->
+                            [#{from => LastFileTill, till => LastFileTill + TorrentFileSize, filename => TorrentFile} | FileAcc]
+                    end,
+                    {SizeAcc + TorrentFileSize, NewFileAcc}
+                end,
+                {0, []},
+                TorrentFiles
+            )
+    end,
+    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
+    LastPieceSize = FullSize - (PiecesAmount - 1) * PieceSize,
     LastPieceId = PiecesAmount - 1,
-    % Fill empty pieces peers and downloading pieces
     IdsList = lists:seq(0, LastPieceId),
+    AnnounceLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
+    PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
+    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString)]),
+    {ok, _} = erltorrent_peers_crawler_sup:start_child(AnnounceLink, HashBinString, PeerId, FullSize),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
     {ok, _MgrPid} = erltorrent_peer_events:start_link(),
     NewState = State#state{
-        file_name            = FileName,
+        files                = lists:reverse(Files),
         pieces_amount        = PiecesAmount,
         piece_peers          = NewPiecesPeers,
         peer_id              = PeerId,
         hash                 = HashBinString,
-        piece_length         = PieceSize,
-        last_piece_length    = LastPieceLength,
+        piece_size           = PieceSize,
+        last_piece_size      = LastPieceSize,
         last_piece_id        = LastPieceId,
         pieces_hash          = Pieces,
         pieces_left          = IdsList,
@@ -339,16 +356,6 @@ handle_info(assign_peers, State = #state{}) ->
 %% @doc
 %% If downloaded piece hash was invalid, update state pieces downloading state and reduce give up limit
 %%
-%%handle_info({'DOWN', MonitorRef, process, _Pid, invalid_hash}, State = #state{downloading_pieces = DownloadingPieces, pieces_peers = PiecesPeers, peers = Peers, give_up_limit = GiveUpLimit}) ->
-%%    {value, #downloading_piece{piece_id = PieceId, ip_port = IpPort}} = lists:keysearch(MonitorRef, #downloading_piece.monitor_ref, DownloadingPieces),
-%%    NewGiveUpLimit = GiveUpLimit - 1,
-%%    lager:info("Piece (ID=~p) hash is invalid! Tries left = ~p.", [PieceId, NewGiveUpLimit]),
-%%    {NewDownloadingPieces, NewPiecesPeers} = update_state_after_invalid_piece(MonitorRef, DownloadingPieces, PiecesPeers),
-%%    % Penalty for invalid piece! Make peer rating undefined.
-%%    {value, Peer} = lists:keysearch(IpPort, #peer.ip_port, Peers),
-%%    NewPeers = lists:sort(lists:keyreplace(IpPort, #peer.ip_port, Peers, Peer#peer{rating = undefined, count_blocks = 0, time = 0})),
-%%    {noreply, State#state{downloading_pieces = NewDownloadingPieces, pieces_peers = NewPiecesPeers, give_up_limit = NewGiveUpLimit, peers = NewPeers}};
-
 handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime}, State) ->
     #state{
         peer_pieces             = PeerPieces,
@@ -363,7 +370,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime},
             {Pieces, EndGame} = find_not_downloading_piece(NewState0, Ids),
             Timeout = case EndGame of
                 false -> undefined;
-                true  -> AvgBlockDownloadTime * BlocksInPiece
+                true  -> AvgBlockDownloadTime * BlocksInPiece * 20 % @todo think about constant
             end,
             % If end game just enabled, stop slow leechers
             ok = case {CurrEndGame, EndGame} of
@@ -393,7 +400,10 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime},
 %% @doc
 %% Remove process from downloading pieces if it crashes.
 %%
-handle_info({'EXIT', Pid, Reason}, State) when Reason =:= socket_error; Reason =:= too_slow ->
+handle_info({'EXIT', Pid, Reason}, State) when
+    Reason =:= socket_error;
+    Reason =:= too_slow;
+    Reason =:= invalid_hash ->
     #state{
         downloading_pieces = DownloadingPieces,
         assign_peers_timer = AssignPeersTimer
@@ -406,6 +416,9 @@ handle_info({'EXIT', Pid, Reason}, State) when Reason =:= socket_error; Reason =
                     lager:info("Stopped because too slow! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
                     % Completely remove slow peers from available peers list
                     remove_peer_from_peer_pieces(StateAcc0, IpPort);
+                invalid_hash ->
+                    lager:info("Stopped because invalid hash! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
+                    remove_peer_from_peer_pieces(StateAcc0, IpPort); % @todo change to move to end
                 _        ->
                     StateAcc0
             end;
@@ -579,6 +592,7 @@ do_speed_checking(State) ->
         downloading_pieces  = DownloadingPieces
     } = State,
     AvgDownloadingTime = get_avg_block_download_time(Hash),
+    % @todo don't stop such peers which has unique pieces
     spawn(
         fun () ->
             ok = lists:foreach(
@@ -611,7 +625,7 @@ assign_peers([], State) ->
 
 assign_peers([{IpPort, Ids} | T], State) ->
     #state{
-        file_name               = FileName,
+        files                   = Files,
         peer_id                 = PeerId,
         hash                    = Hash,
         end_game                = CurrEndGame,
@@ -629,7 +643,7 @@ assign_peers([{IpPort, Ids} | T], State) ->
                     true  -> AvgBlockDownloadTime * BlocksInPiece;
                     false -> undefined
                 end,
-                {ok, Pid} = erltorrent_leecher:start_link(FileName, Ip, Port, PeerId, Hash, Piece, Timeout),
+                {ok, Pid} = erltorrent_leecher:start_link(Files, Ip, Port, PeerId, Hash, Piece, Timeout),
                 lager:info("Starting leecher. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}]),
                 % Add new downloading pieces
                 AccState#state{
@@ -677,11 +691,9 @@ assign_peers([{IpPort, Ids} | T], State) ->
 is_end(#state{pieces_left = [_|_]}) ->
     ok;
 
-is_end(#state{torrent_name = TorrentName, file_name = FileName, pieces_left = []}) ->
-    ok = erltorrent_helper:concat_file(FileName),
-    ok = erltorrent_helper:delete_downloaded_pieces(FileName),
-    lager:info("Download completed!"),
-    erltorrent_sup:stop_child(TorrentName). % @todo fix deadlock
+is_end(#state{torrent_name = TorrentName, pieces_left = []}) ->
+    lager:info("Torrent=~p download completed!", [TorrentName]),
+    ok = erltorrent_sup:stop_child(TorrentName). % @todo is it a proper way to stop? Match will never happen
 
 
 %%
@@ -791,7 +803,7 @@ get_completion_percentage(State) ->
 find_not_downloading_piece(State = #state{}, Ids) ->
     #state{
         downloading_pieces = DownloadingPieces,
-        piece_length       = PieceLength,
+        piece_size         = PieceSize,
         pieces_hash        = PiecesHash
     } = State,
     {Pieces, EndGame} = lists:foldl(
@@ -801,14 +813,15 @@ find_not_downloading_piece(State = #state{}, Ids) ->
             (Id, {AccPiece, true}) ->
                 case lists:keysearch(Id, #downloading_piece.piece_id, DownloadingPieces) of
                     false ->
-                        CurrentPieceLength = get_current_piece_length(Id, PieceLength, State),
+                        CurrentPieceSize = get_current_piece_size(Id, PieceSize, State),
                         Exclude = Id * 20,
                         <<_:Exclude/binary, PieceHash:20/binary, _Rest/binary>> = PiecesHash,
                         NewAccPiece = [#piece{
                             piece_id        = Id,
-                            last_block_id   = trunc(math:ceil(CurrentPieceLength / ?DEFAULT_REQUEST_LENGTH)),
-                            piece_length    = CurrentPieceLength,
-                            piece_hash      = PieceHash
+                            last_block_id   = trunc(math:ceil(CurrentPieceSize / ?DEFAULT_REQUEST_LENGTH)),
+                            piece_size      = CurrentPieceSize,
+                            piece_hash      = PieceHash,
+                            std_piece_size  = PieceSize
                         } | AccPiece],
                         {NewAccPiece, (length(NewAccPiece) < 2)};
                     {value, _} ->
@@ -827,7 +840,7 @@ find_not_downloading_piece(State = #state{}, Ids) ->
 %% @private
 %% Determine if piece is a last or not and get it's length
 %%
-get_current_piece_length(PieceId, PieceLength, #state{last_piece_id = LastPieceId, last_piece_length = LastPieceLength}) ->
+get_current_piece_size(PieceId, PieceLength, #state{last_piece_id = LastPieceId, last_piece_size = LastPieceLength}) ->
     case PieceId =:= LastPieceId of
         true  -> LastPieceLength;
         false -> PieceLength
@@ -874,15 +887,15 @@ make_downloading_pieces(Hash, IdsList) ->
 %%    PiecesHash = <<"nuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQj">>,
 %%    State = #state{
 %%        downloading_pieces = DownloadingPieces,
-%%        piece_length       = ?DEFAULT_REQUEST_LENGTH * 10,
+%%        piece_size       = ?DEFAULT_REQUEST_LENGTH * 10,
 %%        pieces_hash        = PiecesHash,
 %%        last_piece_id      = 10
 %%    },
 %%    Ids = [1, 3, 6],
 %%    Result = [
-%%        #piece{piece_id = 6, last_block_id = 10, piece_length = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>},
-%%        #piece{piece_id = 3, last_block_id = 10, piece_length = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>},
-%%        #piece{piece_id = 1, last_block_id = 10, piece_length = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>}
+%%        #piece{piece_id = 6, last_block_id = 10, piece_size = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>},
+%%        #piece{piece_id = 3, last_block_id = 10, piece_size = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>},
+%%        #piece{piece_id = 1, last_block_id = 10, piece_size = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>}
 %%    ],
 %%    [
 %%        ?_assertEqual(
@@ -924,7 +937,7 @@ make_downloading_pieces(Hash, IdsList) ->
 %%                    piece_peers        = PiecePeers4,
 %%                    peer_pieces        = PeerPieces4,
 %%                    downloading_pieces = DownloadingPieces,
-%%                    piece_length       = ?DEFAULT_REQUEST_LENGTH * 10,
+%%                    piece_size       = ?DEFAULT_REQUEST_LENGTH * 10,
 %%                    pieces_hash        = PiecesHash,
 %%                    last_piece_id      = 10
 %%                },
@@ -1198,8 +1211,8 @@ make_downloading_pieces(Hash, IdsList) ->
 %%        peer_id             = <<"P33rId">>,
 %%        peers               = Peers,
 %%        hash                = <<"h4sh">>,
-%%        piece_length        = 16384,
-%%        last_piece_length   = 4200,
+%%        piece_size        = 16384,
+%%        last_piece_size   = 4200,
 %%        last_piece_id       = 10,
 %%        pieces_hash         = PiecesHash,
 %%        pieces_amount       = 100

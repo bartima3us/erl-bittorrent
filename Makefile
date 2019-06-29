@@ -1,8 +1,7 @@
 start:
 	rm -f log/*
-	rm -rf temp/*
 	rm -f db/*
-	rm -f downloads/*
+	rm -rf downloads/*
 	rebar3 shell --config=test/sys.config --sname erltorrent
 
 tests:

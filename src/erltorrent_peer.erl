@@ -15,20 +15,21 @@
 -include("erltorrent.hrl").
 
 %% API
--export([start_link/5]).
+-export([start_link/4]).
 
 %% gen_server callbacks
--export([init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
 -record(state, {
-    file_name       :: string(),
     full_size       :: integer(),
     peer_ip         :: inet:ip_address(),
     port            :: inet:port_number(),
@@ -53,8 +54,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Peer, PeerId, Hash, FileName, FullSize) ->
-    gen_server:start_link(?MODULE, [Peer, PeerId, Hash, FileName, FullSize], []).
+start_link(Peer, PeerId, Hash, FullSize) ->
+    gen_server:start_link(?MODULE, [Peer, PeerId, Hash, FullSize], []).
 
 
 
@@ -73,10 +74,9 @@ start_link(Peer, PeerId, Hash, FileName, FullSize) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([{PeerIp, Port}, PeerId, Hash, FileName, FullSize]) ->
+init([{PeerIp, Port}, PeerId, Hash, FullSize]) ->
     {ok, ParserPid} = erltorrent_packet:start_link(),
     State = #state{
-        file_name    = FileName,
         full_size    = FullSize,
         peer_ip      = PeerIp,
         port         = Port,

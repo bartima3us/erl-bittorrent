@@ -182,10 +182,7 @@ read_blocks_time(Hash) ->
     Fun = fun() ->
         mnesia:select(erltorrent_store_peer, [{MatchHead, [], ['$1']}])
     end,
-    case mnesia:ets(Fun) of
-        Result -> lists:flatten(Result);
-        []     -> []
-    end.
+    lists:flatten(mnesia:ets(Fun)).
 
 
 %%  @doc

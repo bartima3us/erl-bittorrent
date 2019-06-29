@@ -15,18 +15,19 @@
 -include("erltorrent.hrl").
 
 %% API
--export([start_link/5]).
+-export([start_link/4]).
 
 %% gen_server callbacks
--export([init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -record(state, {
-    file_name       :: binary(),
     announce_link   :: string(),
     hash            :: binary(),
     peer_id         :: binary(),
@@ -49,8 +50,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(FileName, AnnounceLink, Hash, PeerId, FullSize) ->
-    gen_server:start_link(?MODULE, [FileName, AnnounceLink, Hash, PeerId, FullSize], []).
+start_link(AnnounceLink, Hash, PeerId, FullSize) ->
+    gen_server:start_link(?MODULE, [AnnounceLink, Hash, PeerId, FullSize], []).
 
 
 
@@ -69,10 +70,9 @@ start_link(FileName, AnnounceLink, Hash, PeerId, FullSize) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([FileName, AnnounceLink, Hash, PeerId, FullSize]) ->
+init([AnnounceLink, Hash, PeerId, FullSize]) ->
     lager:info("Crawler is started. AnnounceLink=~p", [AnnounceLink]),
     State = #state{
-        file_name       = FileName,
         announce_link   = AnnounceLink,
         hash            = Hash,
         peer_id         = PeerId,
@@ -130,7 +130,6 @@ handle_cast(_Msg, State) ->
 %%
 handle_info(crawl, State) ->
     #state{
-        file_name       = FileName,
         announce_link   = AnnounceLink,
         hash            = Hash,
         peer_id         = PeerId,
@@ -167,7 +166,7 @@ handle_info(crawl, State) ->
 %%            (_) ->
 %%                lager:info("xxxxxxxxx PEER DISCARDED!!!!! TESTING MODE. xxxxxxxxx"),
 %%                ok
-            (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize)
+            (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FullSize)
         end,
         PeersIP
     ),

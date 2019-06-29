@@ -16,7 +16,7 @@
 -include("erltorrent_store.hrl").
 
 -define(STOPPED_PEER_MULTIPLIER, 5).
--define(SLOW_PEER_MULTIPLIER, 2).
+-define(SLOW_PEER_MULTIPLIER, 3).
 
 %% API
 -export([
@@ -37,7 +37,7 @@
 ]).
 
 -record(state, {
-    torrent_id                  :: integer(), % Unique torrent ID in Mnesia
+    files                       :: integer(), % @todo make a proper type
     peer_ip                     :: tuple(),
     port                        :: integer(),
     socket                      :: port(),
@@ -65,8 +65,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(TorrentId, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime) ->
-    gen_server:start_link(?MODULE, [TorrentId, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime], []).
+start_link(Files, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime) ->
+    gen_server:start_link(?MODULE, [Files, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime], []).
 
 
 
@@ -85,9 +85,9 @@ start_link(TorrentId, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTim
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([TorrentId, PeerIp, Port, PeerId, Hash, PieceData, Timeout]) ->
+init([Files, PeerIp, Port, PeerId, Hash, PieceData, Timeout]) ->
     State0 = #state{
-        torrent_id              = TorrentId,
+        files                   = Files,
         peer_ip                 = PeerIp,
         port                    = Port,
         peer_id                 = PeerId,
@@ -252,9 +252,9 @@ handle_info(request_piece, State) ->
         piece_data   = PieceData
     } = State,
     #piece{
-        piece_id      = PieceId,
-        piece_length  = PieceLength,
-        blocks        = Blocks
+        piece_id    = PieceId,
+        piece_size  = PieceSize,
+        blocks      = Blocks
     } = PieceData,
     %
     % Maybe PieceData process downloaded all pieces?
@@ -263,11 +263,11 @@ handle_info(request_piece, State) ->
             % If not, make requests for blocks
             RequestMessage = lists:foldl(
                 fun (NextBlockId, MsgAcc) ->
-                    {ok, {NextLength, OffsetBin}} = get_request_data(NextBlockId, PieceLength),
+                    {ok, {OffsetBin, NextLength}} = get_request_data(NextBlockId, PieceSize),
                     PieceIdBin = erltorrent_helper:int_piece_id_to_bin(PieceId),
-                    PieceLengthBin = <<NextLength:32>>,
+                    PieceSizeBin = <<NextLength:32>>,
                     erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, NextBlockId, erltorrent_helper:get_milliseconds_timestamp(), requested_at),
-                    erltorrent_message:pipeline_request_piece(MsgAcc, PieceIdBin, OffsetBin, PieceLengthBin)
+                    erltorrent_message:pipeline_request_piece(MsgAcc, PieceIdBin, OffsetBin, PieceSizeBin)
                 end,
                 <<"">>,
                 Blocks
@@ -297,7 +297,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     #state{
         peer_ip          = Ip,
         port             = Port,
-        torrent_id       = TorrentId,
+        files            = Files,
         parser_pid       = ParserPid,
         piece_data       = PieceData,
         socket           = Socket,
@@ -307,10 +307,11 @@ handle_info({tcp, _Port, Packet}, State) ->
         started_at       = StartedAt
     } = State,
     #piece{
-        piece_id      = PieceId,
-        piece_hash    = PieceHash,
-        blocks        = Blocks,
-        last_block_id = LastBlockId
+        piece_id        = PieceId,
+        blocks          = Blocks,
+        last_block_id   = LastBlockId,
+        std_piece_size  = StdPieceSize,
+        piece_size      = PieceSize
     } = PieceData,
     {ParseTime, {ok, Data}} = timer:tc(fun () ->
          erltorrent_packet:parse(ParserPid, Packet)
@@ -346,11 +347,9 @@ handle_info({tcp, _Port, Packet}, State) ->
                 <<BlockBegin:32>> = BlockOffset,
                 BlockId = trunc(BlockBegin / ?DEFAULT_REQUEST_LENGTH),
                 case lists:member(BlockId, Blocks) of
-                    true ->
-                        FileName = filename:join(["temp", TorrentId, integer_to_list(GotPieceId), integer_to_list(BlockBegin) ++ ".block"]),
-                        filelib:ensure_dir(FileName),
-                        file:write_file(FileName, Payload),
-                        ok;
+                    true  ->
+                        {ok, {_, RequestLength}} = get_request_data(BlockId, PieceSize),
+                        write_payload(Files, StdPieceSize, GotPieceId, BlockBegin, Payload, RequestLength);
                     false ->
                         ok
                 end;
@@ -396,7 +395,7 @@ handle_info({tcp, _Port, Packet}, State) ->
     },
     case NewBlocks of
         [] ->
-            case confirm_piece_hash(TorrentId, PieceHash, PieceId) of
+            case confirm_piece_hash(Files, PieceData) of
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
                     CompletedAt = erltorrent_helper:get_milliseconds_timestamp(),
@@ -405,9 +404,8 @@ handle_info({tcp, _Port, Packet}, State) ->
                     {noreply, NewState#state{timeout_ref = undefined}};
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
-                    ok = erltorrent_helper:delete_downloaded_piece(TorrentId, PieceId),
-                    erltorrent_leech_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
-                    {noreply, NewState#state{timeout_ref = update_timeout(State)}}
+%%                    erltorrent_leech_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
+                    {stop, invalid_hash, NewState#state{timeout_ref = update_timeout(State)}}
             end;
         [_|_] ->
             ok = erltorrent_helper:get_packet(Socket),
@@ -441,7 +439,10 @@ handle_info({switch_piece, Piece, Timeout}, State) ->
         parser_pid      = ParserPid,
         started_at      = erltorrent_helper:get_milliseconds_timestamp(),
         parse_time      = 0
+%%        timeout         = Timeout
     },
+    % @todo implement timeout
+%%    NewState2 = update_timeout(NewState),
     erltorrent_peer_events:swap_sup_handler({OldPieceId, PeerIp, Port}, {PieceId, PeerIp, Port}, PieceId),
     self() ! request_piece,
     {noreply, NewState};
@@ -458,9 +459,9 @@ handle_info({block_downloaded, BlockId}, State) ->
         socket      = Socket
     } = State,
     #piece{
-        piece_id        = PieceId,
-        blocks          = Blocks,
-        piece_length    = PieceLength
+        piece_id    = PieceId,
+        blocks      = Blocks,
+        piece_size  = PieceSize
     } = Piece,
     erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
     erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
@@ -470,7 +471,7 @@ handle_info({block_downloaded, BlockId}, State) ->
             status = not_requested
         }
     },
-    {ok, {Length, OffsetBin}} = get_request_data(BlockId, PieceLength),
+    {ok, {OffsetBin, Length}} = get_request_data(BlockId, PieceSize),
     erltorrent_message:cancel(Socket, PieceId, OffsetBin, Length),
     self() ! request_piece,
     {noreply, NewState};
@@ -547,26 +548,144 @@ do_connect(PeerIp, Port) ->
     end.
 
 
+%%
+%%
+%%
+get_file_name(_SizeFrom, _SizeTill, [File]) ->
+    File;
+
+get_file_name(SizeFrom, SizeTill, Files) ->
+    FilterFrom = lists:reverse(lists:dropwhile(
+        fun
+            (#{from := FileSizeFrom, till := FileSizeTill}) ->
+                not (SizeFrom >= FileSizeFrom andalso SizeFrom < FileSizeTill)
+        end,
+        Files
+    )),
+    [#{till := LastTill} | _] = FilterFrom,
+    case SizeTill >= LastTill of
+        true  ->
+            lists:reverse(FilterFrom);
+        false ->
+            lists:reverse(lists:dropwhile(
+                fun
+                    (#{from := FileSizeFrom, till := FileSizeTill}) ->
+                        not (SizeTill > FileSizeFrom andalso SizeTill =< FileSizeTill)
+                end,
+                FilterFrom
+            ))
+    end.
+
+
+%%
+%%
+%%
+write_payload(Files, StdPieceSize, GotPieceId, BlockBegin, FullPayload, RequestLength) ->
+    SizeFrom = StdPieceSize * GotPieceId + BlockBegin,
+    SizeTill = SizeFrom + RequestLength,
+    WriteFun = fun (FileName, Payload, Offset) ->
+        FilePath = filename:join(["downloads", FileName]),
+        filelib:ensure_dir(FilePath),
+        {ok, IoDevice} = file:open(FilePath, [write, read, binary]), % @todo move open to init and switch file
+        ok = file:pwrite(IoDevice, [{{bof, Offset}, Payload}]),
+        ok = file:close(IoDevice) % @todo move along with file:open/2
+    end,
+    case get_file_name(SizeFrom, SizeTill, Files) of
+        % Downloading one file torrent
+        #{filename := FileName} ->
+            ok = WriteFun(FileName, FullPayload, SizeFrom);
+        % Downloading multiple files torrent
+        FileNames when is_list(FileNames) ->
+            lists:foldl(
+                fun (#{from := From, till := Till, filename := FileName}, {RestPayload, GlobalOffset}) ->
+                    Size = Till - GlobalOffset,
+                    % Global offset is offset in the concated payload of all torrent files
+                    % while file offset starts from zero in every individual file
+                    FileOffset = GlobalOffset - From,
+                    case Size < byte_size(RestPayload) of
+                        true ->
+                            <<Payload:Size/binary, Rest/binary>> = RestPayload,
+                            ok = WriteFun(FileName, Payload, FileOffset);
+                        false ->
+                            ok = WriteFun(FileName, RestPayload, FileOffset), % Offset - From
+                            Rest = <<>>
+                    end,
+                    {Rest, Till}
+                end,
+                {FullPayload, SizeFrom},
+                FileNames
+            ),
+            ok
+    end.
+
+
 %% @doc
 %% Get increased `length` and `offset`
 %%
-get_request_data(BlockId, PieceLength) ->
+get_request_data(BlockId, PieceSize) ->
     OffsetBin = <<(?DEFAULT_REQUEST_LENGTH * BlockId):32>>,
     <<OffsetInt:32>> = OffsetBin,
     % Last chunk of piece would be shorter than default length so we need to check if next chunk isn't a last
-    NextLength = case (OffsetInt + ?DEFAULT_REQUEST_LENGTH) =< PieceLength of
+    NextLength = case (OffsetInt + ?DEFAULT_REQUEST_LENGTH) =< PieceSize of
         true  -> ?DEFAULT_REQUEST_LENGTH;
-        false -> PieceLength - OffsetInt
+        false -> PieceSize - OffsetInt
     end,
-    {ok, {NextLength, OffsetBin}}.
+    {ok, {OffsetBin, NextLength}}.
 
 
 %% @doc
 %% Confirm if piece hash is valid
 %%
-confirm_piece_hash(TorrentId, PieceHash, PieceId) ->
-    {ok, DownloadedPieceHash} = erltorrent_helper:get_concated_piece(TorrentId, PieceId),
-    crypto:hash(sha, DownloadedPieceHash) =:= PieceHash.
+confirm_piece_hash(Files, PieceData) ->
+    #piece{
+        piece_id        = PieceId,
+        std_piece_size  = StdPieceSize,
+        piece_size      = PieceSize,
+        piece_hash      = PieceHash
+    } = PieceData,
+    SizeFrom = StdPieceSize * PieceId,
+    SizeTill = SizeFrom + PieceSize,
+    ReadFun = fun (FileName, Offset, Size) ->
+        FilePath = filename:join(["downloads", FileName]),
+        {ok, IoDevice} = file:open(FilePath, [read, binary]), % @todo move open to init and switch file
+        {ok, Data} = file:pread(IoDevice, [{{bof, Offset}, Size}]),
+        FullData = lists:foldl(fun (Chunk, Chunks) -> <<Chunks/binary, Chunk/binary>> end, <<>>, Data),
+        ok = file:close(IoDevice), % @todo move along with file:open/2
+        FullData
+    end,
+    PiecePayload = case get_file_name(SizeFrom, SizeTill, Files) of
+        % Downloading one file torrent
+        #{filename := FileName} ->
+            ReadFun(FileName, SizeFrom, PieceSize);
+        % Downloading multiple files torrent
+        FileNames when is_list(FileNames) ->
+            {_, _, PP} = lists:foldl(
+                fun (#{from := From, till := Till, filename := FileName}, {FullSize, GlobalOffset, CurrPayload}) ->
+                    Size = Till - GlobalOffset,
+                    % Global offset is offset in the concated payload of all torrent files
+                    % while file offset starts from zero in every individual file
+                    FileOffset = GlobalOffset - From,
+                    case Size < FullSize of
+                        true ->
+                            Payload = ReadFun(FileName, FileOffset, Size),
+                            {FullSize - Size, Till, <<CurrPayload/binary, Payload/binary>>};
+                        false ->
+                            Payload = ReadFun(FileName, FileOffset, FullSize),
+                            {0, Till, <<CurrPayload/binary, Payload/binary>>}
+                    end
+                end,
+                {PieceSize, SizeFrom, <<>>},
+                FileNames
+            ),
+            PP
+    end,
+    case crypto:hash(sha, PiecePayload) =:= PieceHash of
+        true ->
+            true;
+        false ->
+            lager:info("Bad piece=~p checksum!", [PieceId]),
+            false
+    end.
 
 
 %%
@@ -656,22 +775,109 @@ update_timeout(State = #state{timeout = Timeout}) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
+get_file_name_test_() ->
+    Files = [
+        #{from => 0, till => 10,  filename => "f1"},
+        #{from => 10, till => 15, filename => "f2"},
+        #{from => 15, till => 20, filename => "f3"},
+        #{from => 20, till => 30, filename => "f4"}
+    ],
+    [
+        ?_assertEqual(
+            [#{filename => "f1", from => 0, till => 10}],
+            get_file_name(0, 10, Files)
+        ),
+        ?_assertEqual(
+            [#{filename => "f1", from => 0, till => 10}],
+            get_file_name(0, 3, Files)
+        ),
+        ?_assertEqual(
+            [#{filename => "f1", from => 0, till => 10}],
+            get_file_name(9, 10, Files)
+        ),
+        ?_assertEqual(
+            [#{filename => "f2", from => 10, till => 15}],
+            get_file_name(10, 15, Files)
+        ),
+        ?_assertEqual(
+            [#{filename => "f3", from => 15, till => 20}],
+            get_file_name(15, 20, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f2", from => 10, till => 15},
+                #{filename => "f3", from => 15, till => 20}
+            ],
+            get_file_name(10, 20, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f1", from => 0,  till => 10},
+                #{filename => "f2", from => 10, till => 15},
+                #{filename => "f3", from => 15, till => 20}
+            ],
+            get_file_name(0, 19, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f1", from => 0,  till => 10},
+                #{filename => "f2", from => 10, till => 15},
+                #{filename => "f3", from => 15, till => 20}
+            ],
+            get_file_name(7, 19, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f3", from => 15, till => 20}
+            ],
+            get_file_name(18, 20, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f3", from => 15, till => 20},
+                #{filename => "f4", from => 20, till => 30}
+            ],
+            get_file_name(15, 30, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f3", from => 15, till => 20},
+                #{filename => "f4", from => 20, till => 30}
+            ],
+            get_file_name(15, 31, Files)
+        ),
+        ?_assertEqual(
+            [
+                #{filename => "f1", from => 0,  till => 10},
+                #{filename => "f2", from => 10, till => 15},
+                #{filename => "f3", from => 15, till => 20},
+                #{filename => "f4", from => 20, till => 30}
+            ],
+            get_file_name(0, 30, Files)
+        ),
+        ?_assertEqual(
+            #{filename => "f1", from => 0, till => 20},
+            get_file_name(0, 5, [#{filename => "f1", from => 0, till => 20}])
+        )
+    ].
+
+
 %%get_request_data_test_() ->
 %%    [
 %%        ?_assertEqual(
-%%            {ok, {?DEFAULT_REQUEST_LENGTH, <<0, 0, 64, 0>>}},
+%%            {ok, {<<0, 0, 64, 0>>, ?DEFAULT_REQUEST_LENGTH}},
 %%            get_request_data(1, 290006769)
 %%        ),
 %%        ?_assertEqual(
-%%            {ok, {?DEFAULT_REQUEST_LENGTH, <<0, 1, 128, 0>>}},
+%%            {ok, {<<0, 1, 128, 0>>, ?DEFAULT_REQUEST_LENGTH}},
 %%            get_request_data(6, 290006769)
 %%        ),
 %%        ?_assertEqual(
-%%            {ok, {1696, <<0, 1, 128, 0>>}},
+%%            {ok, {<<0, 1, 128, 0>>, 1696}},
 %%            get_request_data(6, 100000)
 %%        ),
 %%        ?_assertEqual(
-%%            {ok, {-14688, <<0, 1, 192, 0>>}},
+%%            {ok, {<<0, 1, 192, 0>>, -14688}},
 %%            get_request_data(7, 100000)
 %%        )
 %%    ].

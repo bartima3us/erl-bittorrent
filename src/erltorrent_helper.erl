@@ -14,10 +14,6 @@
     urlencode/1,
     random/1,
     convert_to_list/1,
-    concat_file/1,
-    delete_downloaded_piece/2,
-    delete_downloaded_pieces/1,
-    get_concated_piece/2,
     get_packet/1,
     bin_piece_id_to_int/1,
     int_piece_id_to_bin/1,
@@ -26,16 +22,6 @@
     do_monitor/2,
     get_milliseconds_timestamp/0,
     shuffle_list/1
-]).
-
-% Debug functions
--export([
-    confirm_hash/0,
-    get_block/2,
-    compare_block/2,
-    get_meta_data/0,
-    compare_last_piece/0,
-    compare_files/2
 ]).
 
 
@@ -136,109 +122,6 @@ get_packet(Socket) ->
 
 
 %% @doc
-%% Delete all downloaded pieces
-%%
-delete_downloaded_pieces(FileName) ->
-    PiecesDir = filename:join(["temp", FileName]),
-    {ok, Pieces} = file:list_dir(PiecesDir),
-    WritePieceFun = fun(Piece) ->
-        delete_downloaded_piece(FileName, Piece)
-    end,
-    lists:map(WritePieceFun, Pieces),
-    file:del_dir(PiecesDir),
-    ok.
-
-
-%% @doc
-%% Delete downloaded piece directory with all block
-%%
-delete_downloaded_piece(FileName, Piece) when is_integer(Piece) ->
-    delete_downloaded_piece(FileName, integer_to_list(Piece));
-
-delete_downloaded_piece(FileName, Piece) ->
-    PieceDir = filename:join(["temp", FileName, Piece]),
-    {ok, Blocks} = file:list_dir(PieceDir),
-    DeleteBlockFun = fun(Block) ->
-        file:delete(filename:join(["temp", FileName, Piece, Block]))
-    end,
-    lists:map(DeleteBlockFun, Blocks),
-    file:del_dir(PieceDir),
-    ok.
-
-
-%% @doc
-%% Concat all blocks to piece and return an IO list
-%%
-get_concated_piece(FileName, Piece) when is_integer(Piece) ->
-    get_concated_piece(FileName, integer_to_list(Piece));
-
-get_concated_piece(FileName, Piece) ->
-    {ok, Blocks} = file:list_dir(filename:join(["temp", FileName, Piece])),
-    ReadBlockFun = fun(Block) ->
-        {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, Block])),
-        Content
-    end,
-    {ok, lists:map(ReadBlockFun, sort_with_split(Blocks))}.
-
-
-%% @doc
-%% Concat all parts and pieces into file
-%% @todo need to make smarter algorithm without doubling a file
-concat_file(FileName) ->
-    {ok, Pieces} = file:list_dir(filename:join(["temp", FileName])),
-    WritePieceFun = fun(Piece) ->
-        write_piece(FileName, Piece)
-    end,
-    lists:map(WritePieceFun, sort(Pieces)),
-    ok.
-
-
-%% @doc
-%% Concat pieces
-%%
-write_piece(FileName, Piece) ->
-    {ok, Blocks} = file:list_dir(filename:join(["temp", FileName, Piece])),
-    WriteBlockFun = fun(Block) ->
-        write_block(FileName, Piece, Block)
-    end,
-    lists:map(WriteBlockFun, sort_with_split(Blocks)),
-    ok.
-
-
-%% @doc
-%% Concat blocks
-%%
-write_block(FileName, Piece, Block) ->
-    {ok, Content} = file:read_file(filename:join(["temp", FileName, Piece, Block])),
-    file:write_file(filename:join(["downloads", FileName]), Content, [append]),
-    ok.
-
-
-%% @doc
-%% Sort directories by name
-%%
-sort(Files) ->
-    List2 = lists:map(fun (File) -> list_to_integer(File) end, Files),
-    List3 = lists:sort(List2),
-    lists:map(fun (File) -> integer_to_list(File) end, List3).
-
-
-%% @doc
-%% Sort files in directory by name
-%%
-sort_with_split(Files) ->
-    List2 = lists:map(
-        fun (File) ->
-            [Name, _Extension] = string:tokens(File, "."),
-            list_to_integer(Name)
-        end,
-        Files
-    ),
-    List3 = lists:sort(List2),
-    lists:map(fun (File) -> integer_to_list(File) ++ ".block" end, List3).
-
-
-%% @doc
 %% Exit process fun. Need because of mock purposes for tests.
 %%
 do_exit(Pid, Reason) ->
@@ -272,118 +155,5 @@ get_milliseconds_timestamp() ->
 %%
 shuffle_list(List) ->
     [ X || {_, X} <- lists:sort([{random:uniform(), N} || N <- List]) ].
-
-
-
-%%%===================================================================
-%%% Temporary debug functions
-%%%===================================================================
-
-%%
-%%
-%%
-confirm_hash() ->
-    File = filename:join(["torrents", "[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent"]),
-    {ok, Bin} = file:read_file(File),
-    {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
-    {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
-    Pieces = dict:fetch(<<"pieces">>, Info),
-    FullSize     = dict:fetch(<<"length">>, Info),
-    PieceSize    = dict:fetch(<<"piece length">>, Info),
-    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
-    lists:map(
-        fun(Piece) ->
-            Exclude = Piece * 20,
-            <<_Off:Exclude/binary, FirstHash:20/binary, _Rest/binary>> = Pieces,
-            PieceSize    = dict:fetch(<<"piece length">>, Info),
-            TorrentName = "[Commie] Banana Fish - 01 [3600C7D5].mkv",
-            {ok, IO} = file:open(filename:join(["downloads", TorrentName]), [read]),
-            {ok, DownloadedPiece} = file:pread(IO, PieceSize * Piece, PieceSize),
-            DownloadedHash = crypto:hash(sha, DownloadedPiece),
-            case DownloadedHash =:= FirstHash of
-                true -> ok;
-                false -> io:format("False on = ~p~n", [Piece])
-            end,
-            ok = file:close(IO)
-        end,
-        lists:seq(0, PiecesAmount - 1)
-    ),
-    ok.
-
-
-%%
-%%
-%%
-get_block(Piece, Offset) ->
-    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".block"]),
-    {ok, Bin} = file:read_file(File),
-    file:write_file("test.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
-    ok.
-
-
-%%
-%%
-%%
-compare_block(Piece, Offset) ->
-    Exclude = trunc(list_to_integer(Piece) * 16384 * 64 + (list_to_integer(Offset) / 16384) * 16384),
-    {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
-    <<_:Exclude/binary, CuttedOriginal:16384/binary, Rest/binary>> = OriginalFileBin,
-    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", Piece, Offset ++ ".block"]),
-    {ok, Bin} = file:read_file(File),
-    io:format("Rest byte size=~p", [byte_size(Rest)]),
-    file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
-    file:write_file("test_original.txt", erltorrent_bin_to_hex:bin_to_hex(CuttedOriginal)),
-    ok.
-
-
-%%
-%%
-%%
-compare_files(Piece, Offset) ->
-    Exclude = trunc(list_to_integer(Piece) * 16384 * 64 + (list_to_integer(Offset) / 16384) * 16384),
-    {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
-    {ok, MyFileBin} = file:read_file("downloads/[Commie] Banana Fish - 01 [3600C7D5].mkv"),
-    <<_:Exclude/binary, CuttedOriginal:16384/binary, _RestOriginal/binary>> = OriginalFileBin,
-    <<_:Exclude/binary, CuttedMy:16384/binary, _RestMy/binary>> = MyFileBin,
-    file:write_file("test_original.txt", erltorrent_bin_to_hex:bin_to_hex(CuttedOriginal)),
-    file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(CuttedMy)),
-    ok.
-
-%%
-%%
-%%
-compare_last_piece() ->
-    Exclude = trunc(203 * 16384 * 64 + (573440 / 16384) * 16384),
-    {ok, OriginalFileBin} = file:read_file("[Commie] Banana Fish - 01 [3600C7D5].mkv"),
-    <<_:Exclude/binary, _CuttedOriginal:16384/binary, Rest/binary>> = OriginalFileBin,
-    File = filename:join(["temp", "[Commie] Banana Fish - 01 [3600C7D5].mkv", "203", "589824" ++ ".block"]),
-    {ok, Bin} = file:read_file(File),
-    io:format("Rest byte size=~p", [byte_size(Rest)]),
-    file:write_file("test_mano.txt", erltorrent_bin_to_hex:bin_to_hex(Bin)),
-    file:write_file("test_original.txt", erltorrent_bin_to_hex:bin_to_hex(Rest)),
-    ok.
-
-
-%%
-%%
-%%
-get_meta_data() ->
-    File = filename:join(["torrents", "[Commie] Banana Fish - 01 [3600C7D5].mkv.torrent"]),
-    {ok, Bin} = file:read_file(File),
-    {ok, {dict, MetaInfo}} = erltorrent_bencoding:decode(Bin),
-    {dict, Info} = dict:fetch(<<"info">>, MetaInfo),
-    FileName = dict:fetch(<<"name">>, Info),
-    Pieces = dict:fetch(<<"pieces">>, Info),
-    FullSize = dict:fetch(<<"length">>, Info),
-    PieceSize = dict:fetch(<<"piece length">>, Info),
-    TrackerLink = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
-    PiecesAmount = list_to_integer(float_to_list(math:ceil(FullSize / PieceSize), [{decimals, 0}])),
-    LastPieceLength = FullSize - (PiecesAmount - 1) * PieceSize,
-    io:format("File name = ~p~n", [FileName]),
-    io:format("Piece size = ~p bytes~n", [PieceSize]),
-    io:format("Full file size = ~p~n", [FullSize]),
-    io:format("Pieces amount = ~p~n", [PiecesAmount]),
-    io:format("LastPieceLength = ~p~n", [LastPieceLength]),
-    ok.
 
 
