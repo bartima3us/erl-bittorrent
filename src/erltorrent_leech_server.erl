@@ -51,7 +51,6 @@
     key                 :: {piece_id_int(), ip_port()}, % PieceID and {Ip, Port}
     piece_id            :: piece_id_int(),
     peer                :: ip_port(),   % Currently downloading peer
-    monitor_ref         :: reference(), % @todo remove
     pid                 :: pid(),   % Downloader pid
     status      = false :: false | downloading | completed
 }).
