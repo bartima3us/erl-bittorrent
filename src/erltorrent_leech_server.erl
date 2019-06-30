@@ -370,7 +370,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime},
             {Pieces, EndGame} = find_not_downloading_piece(NewState0, Ids),
             Timeout = case EndGame of
                 false -> undefined;
-                true  -> AvgBlockDownloadTime * BlocksInPiece * 20 % @todo think about constant
+                true  -> AvgBlockDownloadTime * BlocksInPiece * 20 % @todo need to track fails and constantly increase a constant with new start. Also don't remove slow peers from list, just add to the end.
             end,
             % If end game just enabled, stop slow leechers
             ok = case {CurrEndGame, EndGame} of
@@ -418,7 +418,8 @@ handle_info({'EXIT', Pid, Reason}, State) when
                     remove_peer_from_peer_pieces(StateAcc0, IpPort);
                 invalid_hash ->
                     lager:info("Stopped because invalid hash! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
-                    remove_peer_from_peer_pieces(StateAcc0, IpPort); % @todo change to move to end
+                    % @todo don't remove slow peers. Just move to the end of the list. To do this first need to remove a dict because they don't have a positions
+                    remove_peer_from_peer_pieces(StateAcc0, IpPort);
                 _        ->
                     StateAcc0
             end;
@@ -493,9 +494,9 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 %%
 add_to_peer_pieces(State = #state{peer_pieces = PeerPieces}, Ip, Port, Ids) ->
-    NewPeerPieces = case dict:is_key({Ip, Port}, PeerPieces) of
-        true  -> dict:append_list({Ip, Port}, Ids, PeerPieces);
-        false -> dict:store({Ip, Port}, Ids, PeerPieces)
+    NewPeerPieces = case dict:find({Ip, Port}, PeerPieces) of
+        {ok, Pieces}  -> dict:store({Ip, Port}, lists:usort(Pieces ++ Ids), PeerPieces);
+        error         -> dict:store({Ip, Port}, Ids, PeerPieces)
     end,
     State#state{peer_pieces = NewPeerPieces}.
 
@@ -504,27 +505,26 @@ add_to_peer_pieces(State = #state{peer_pieces = PeerPieces}, Ip, Port, Ids) ->
 %%
 %%
 add_to_piece_peers(State = #state{piece_peers = PiecePeers}, Ip, Port, Bitfield) ->
-    NewPiecesPeers = dict:map(
-        fun (Id, Peers) ->
-            % Check if this IP has an iterating piece
-            case proplists:get_value(Id, Bitfield) of
-                true ->
-                    % If there are not this IP in list yet, add it
+    NewPiecesPeers = lists:foldl(
+        fun (Id, AccPiecePeers) ->
+            case dict:find(Id, AccPiecePeers) of
+                {ok, Peers}  ->
                     case lists:member({Ip, Port}, Peers) of
-                        false -> [{Ip, Port} | Peers];
-                        true  -> Peers
+                        true  -> AccPiecePeers;
+                        false -> dict:append_list(Id, [{Ip, Port}], AccPiecePeers)
                     end;
-                _ ->
-                    Peers
+                error ->
+                    dict:store(Id, [{Ip, Port}], AccPiecePeers)
             end
         end,
-        PiecePeers
+        PiecePeers,
+        Bitfield
     ),
     State#state{piece_peers = NewPiecesPeers}.
 
 
 %%
-%%
+%%  @todo move to the end of the list instead of deletion
 %%
 remove_piece_from_piece_peers(State = #state{piece_peers = PiecePeers, pieces_left = PiecesLeft}, PieceId) ->
     {_Peers, NewPiecePeers} = case dict:is_key(PieceId, PiecePeers) of
@@ -535,7 +535,7 @@ remove_piece_from_piece_peers(State = #state{piece_peers = PiecePeers, pieces_le
 
 
 %%
-%%
+%%  @todo move to the end of the list instead of deletion
 %%
 remove_peer_from_peer_pieces(State = #state{peer_pieces = PeerPieces}, IpPort) ->
     {_, NewPeerPieces} = case dict:is_key(IpPort, PeerPieces) of
@@ -875,35 +875,6 @@ make_downloading_pieces(Hash, IdsList) ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
-%%find_end_game_piece_test_() ->
-%%    DownloadingPieces = [
-%%        #downloading_piece{piece_id = 1, status = downloading},
-%%        #downloading_piece{piece_id = 2, status = downloading},
-%%        #downloading_piece{piece_id = 3, status = downloading},
-%%        #downloading_piece{piece_id = 4, status = completed},
-%%        #downloading_piece{piece_id = 5, status = completed},
-%%        #downloading_piece{piece_id = 6, status = downloading}
-%%    ],
-%%    PiecesHash = <<"nuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQj">>,
-%%    State = #state{
-%%        downloading_pieces = DownloadingPieces,
-%%        piece_size       = ?DEFAULT_REQUEST_LENGTH * 10,
-%%        pieces_hash        = PiecesHash,
-%%        last_piece_id      = 10
-%%    },
-%%    Ids = [1, 3, 6],
-%%    Result = [
-%%        #piece{piece_id = 6, last_block_id = 10, piece_size = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>},
-%%        #piece{piece_id = 3, last_block_id = 10, piece_size = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>},
-%%        #piece{piece_id = 1, last_block_id = 10, piece_size = ?DEFAULT_REQUEST_LENGTH * 10, piece_hash = <<"nuYwPf0y1gILAuVAGsQj">>}
-%%    ],
-%%    [
-%%        ?_assertEqual(
-%%            Result,
-%%            find_end_game_piece(State, Ids)
-%%        )
-%%    ].
-%%
 %%assign_peers_test_() ->
 %%    Ref = make_ref(),
 %%    Pid = list_to_pid("<0.0.1>"),
@@ -949,52 +920,91 @@ make_downloading_pieces(Hash, IdsList) ->
 %%            end
 %%        }]
 %%    }.
-%%
-%%add_new_peer_to_pieces_peers_test_() ->
-%%    Ip = {127,0,0,1},
-%%    Port = 9444,
-%%    ParsedBitfield = [{0, true}, {1, false}, {2, true}, {3, true}],
-%%    PiecePeers1 = dict:store(0, [], dict:new()),
-%%    PiecePeers2 = dict:store(1, [{{127,0,0,2}, 9874}], PiecePeers1),
-%%    PiecePeers3 = dict:store(2, [{{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecePeers2),
-%%    PiecePeers4 = dict:store(3, [{Ip, Port}], PiecePeers3),
-%%    PiecePeers5 = dict:store(0, [{Ip, Port}], PiecePeers4),
-%%    PiecePeers6 = dict:store(2, [{Ip, Port}, {{127,0,0,3}, 9547}, {{127,0,0,2}, 9614}], PiecePeers5),
-%%    PiecePeers7 = dict:store(3, [{Ip, Port}], PiecePeers6),
-%%    State = #state{piece_peers = PiecePeers4, downloading_pieces = [], pieces_amount = 100},
-%%    [
-%%        ?_assertEqual(
-%%            {noreply, #state{piece_peers = PiecePeers7, downloading_pieces = [], pieces_amount = 100}},
-%%            handle_info({bitfield, ParsedBitfield, Ip, Port}, State)
-%%        ),
-%%        ?_assertEqual(
-%%            {noreply, #state{piece_peers = PiecePeers4, downloading_pieces = [], pieces_amount = 100}},
-%%            handle_info({have, 3, Ip, Port}, State)
-%%        ),
-%%        ?_assertEqual(
-%%            {noreply, #state{piece_peers = PiecePeers5, downloading_pieces = [], pieces_amount = 100}},
-%%            handle_info({have, 0, Ip, Port}, State)
-%%        )
-%%    ].
-%%
-%%
-%%get_completion_percentage_test_() ->
-%%    DownloadingPieces = [
-%%        #downloading_piece{piece_id = 0, status = false},
-%%        #downloading_piece{piece_id = 1, status = downloading},
-%%        #downloading_piece{piece_id = 2, status = false},
-%%        #downloading_piece{piece_id = 3, status = false},
-%%        #downloading_piece{piece_id = 4, status = completed},
-%%        #downloading_piece{piece_id = 5, status = completed}
-%%    ],
-%%    [
-%%        ?_assertEqual(
-%%            10.0,
-%%            get_completion_percentage(DownloadingPieces, 20)
-%%        )
-%%    ].
-%%
-%%
+
+
+add_to_peer_pieces_test_() ->
+    PeerPieces1 = dict:store({{127,0,0,1}, 9444}, [1, 2], dict:new()),
+    PeerPieces2 = dict:store({{127,0,0,1}, 9444}, [1, 2, 3], dict:new()),
+    PeerPieces3 = dict:store({{127,0,0,1}, 8888}, [1, 2], PeerPieces2),
+    [
+        ?_assertEqual(
+            #state{peer_pieces = PeerPieces1},
+            add_to_peer_pieces(#state{peer_pieces = PeerPieces1}, {127,0,0,1}, 9444, [1, 2])
+        ),
+        ?_assertEqual(
+            #state{peer_pieces = PeerPieces1},
+            add_to_peer_pieces(#state{}, {127,0,0,1}, 9444, [1, 2])
+        ),
+        ?_assertEqual(
+            #state{peer_pieces = PeerPieces2},
+            add_to_peer_pieces(#state{peer_pieces = PeerPieces1}, {127,0,0,1}, 9444, [2, 3])
+        ),
+        ?_assertEqual(
+            #state{peer_pieces = PeerPieces3},
+            add_to_peer_pieces(#state{peer_pieces = PeerPieces2}, {127,0,0,1}, 8888, [1, 2])
+        )
+    ].
+
+
+add_to_piece_peers_test_() ->
+    PiecePeers1 = dict:store(1, [{{127,0,0,1}, 9444}], dict:new()),
+    PiecePeers2 = dict:store(2, [{{127,0,0,1}, 9444}], PiecePeers1),
+    PiecePeers3 = dict:store(3, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 8888}], PiecePeers2),
+    PiecePeers4 = dict:store(4, [{{127,0,0,1}, 9444}], PiecePeers3),
+    [
+        ?_assertEqual(
+            #state{piece_peers = PiecePeers1},
+            add_to_piece_peers(#state{piece_peers = PiecePeers1}, {127,0,0,1}, 9444, [1])
+        ),
+        ?_assertEqual(
+            #state{piece_peers = PiecePeers1},
+            add_to_piece_peers(#state{}, {127,0,0,1}, 9444, [1])
+        ),
+        ?_assertEqual(
+            #state{piece_peers = PiecePeers2},
+            add_to_piece_peers(#state{piece_peers = PiecePeers1}, {127,0,0,1}, 9444, [2])
+        ),
+        ?_assertEqual(
+            #state{piece_peers = PiecePeers4},
+            add_to_piece_peers(#state{piece_peers = PiecePeers3}, {127,0,0,1}, 9444, [2, 3, 4])
+        )
+    ].
+
+
+add_new_peer_to_pieces_peers_test_() ->
+    ParsedBitfield = [{0, true}, {1, true}, {2, true}, {3, false}],
+    PiecePeers1 = dict:store(0, [{{127,0,0,1}, 9444}], dict:new()),
+    PiecePeers2 = dict:store(1, [{{127,0,0,1}, 9444}], PiecePeers1),
+    PiecePeers3 = dict:store(2, [{{127,0,0,1}, 9444}], PiecePeers2),
+    PeerPieces = dict:store({{127,0,0,1}, 9444}, [0, 1, 2], dict:new()),
+    State = #state{piece_peers = PiecePeers3, peer_pieces = PeerPieces},
+    UpdatedPeerPieces = dict:store({{127,0,0,1}, 8888}, [1], PeerPieces),
+    UpdatedPiecePeers = dict:store(1, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 8888}], PiecePeers3),
+    [
+        ?_assertEqual(
+            {noreply, #state{piece_peers = PiecePeers3, peer_pieces = PeerPieces}},
+            handle_info({bitfield, ParsedBitfield, {127,0,0,1}, 9444}, #state{})
+        ),
+        ?_assertEqual(
+            {noreply, #state{piece_peers = UpdatedPiecePeers, peer_pieces = UpdatedPeerPieces}},
+            handle_info({have, 1, {127,0,0,1}, 8888}, State)
+        )
+    ].
+
+
+get_completion_percentage_test_() ->
+    State = #state{
+        pieces_left   = [1, 2],
+        pieces_amount = 10
+    },
+    [
+        ?_assertEqual(
+            80.0,
+            get_completion_percentage(State)
+        )
+    ].
+
+
 %%remove_process_from_downloading_piece_test_() ->
 %%    PiecesPeers1 = dict:store(0, [], dict:new()),
 %%    PiecesPeers2 = dict:store(1, [{{127,0,0,7}, 9874}], PiecesPeers1),
@@ -1096,84 +1106,39 @@ make_downloading_pieces(Hash, IdsList) ->
 %%            handle_call({downloading_piece, 3}, from, State)
 %%        )
 %%    ].
-%%
-%%
-%%check_if_all_pieces_downloaded_test_() ->
-%%    {setup,
-%%        fun() ->
-%%            ok = meck:new(erltorrent_helper),
-%%            ok = meck:expect(erltorrent_helper, concat_file, ['_'], ok),
-%%            ok = meck:expect(erltorrent_helper, delete_downloaded_pieces, ['_'], ok),
-%%            ok = meck:expect(erltorrent_helper, do_exit, ['_', '_'], ok)
-%%        end,
-%%        fun(_) ->
-%%            true = meck:validate(erltorrent_helper),
-%%            ok = meck:unload(erltorrent_helper)
-%%        end,
-%%        [{"Somes pieces aren't downloaded.",
-%%            fun() ->
-%%                State = #state{
-%%                    file_name = "test.mkv",
-%%                    downloading_pieces = [
-%%                        #downloading_piece{status = completed},
-%%                        #downloading_piece{status = downloading},
-%%                        #downloading_piece{status = completed},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false}
-%%                    ],
-%%                    end_game = false
-%%                },
-%%                {noreply, State} = handle_info(is_end, State),
-%%                0 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
-%%                0 = meck:num_calls(erltorrent_helper, delete_downloaded_pieces, ['_']),
-%%                0 = meck:num_calls(erltorrent_helper, do_exit, ['_', '_'])
-%%            end
-%%        },
-%%        {"Somes pieces aren't downloaded. Entering end game.",
-%%            fun() ->
-%%                State = #state{
-%%                    file_name = "test.mkv",
-%%                    downloading_pieces = [
-%%                        #downloading_piece{status = completed},
-%%                        #downloading_piece{status = downloading},
-%%                        #downloading_piece{status = completed},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false},
-%%                        #downloading_piece{status = false}
-%%                    ],
-%%                    end_game = false
-%%                },
-%%                NewState = State#state{end_game = true},
-%%                {noreply, NewState} = handle_info(is_end, State),
-%%                0 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
-%%                0 = meck:num_calls(erltorrent_helper, delete_downloaded_pieces, ['_']),
-%%                5 = meck:num_calls(erltorrent_helper, do_exit, ['_', kill])
-%%            end
-%%        },
-%%        {"All pieces are downloaded.",
-%%            fun() ->
-%%                State = #state{
-%%                    file_name = "test.mkv",
-%%                    downloading_pieces = [
-%%                        #downloading_piece{status = completed},
-%%                        #downloading_piece{status = completed},
-%%                        #downloading_piece{status = completed}
-%%                    ],
-%%                    end_game = false
-%%                },
-%%                {noreply, State} = handle_info(is_end, State),
-%%                1 = meck:num_calls(erltorrent_helper, concat_file, ['_']),
-%%                1 = meck:num_calls(erltorrent_helper, delete_downloaded_pieces, ['_']),
-%%                1 = meck:num_calls(erltorrent_helper, do_exit, ['_', completed])
-%%            end
-%%        }]
-%%    }.
-%%
-%%
+
+
+check_if_all_pieces_downloaded_test_() ->
+    {setup,
+        fun() ->
+            ok = meck:new(erltorrent_sup),
+            ok = meck:expect(erltorrent_sup, stop_child, ['_'], ok)
+        end,
+        fun(_) ->
+            true = meck:validate(erltorrent_sup),
+            ok = meck:unload(erltorrent_sup)
+        end,
+        [{"Somes pieces aren't downloaded.",
+            fun() ->
+                State = #state{
+                    pieces_left = [1, 2]
+                },
+                ok = is_end(State),
+                0 = meck:num_calls(erltorrent_sup, stop_child, ['_'])
+            end
+        },
+        {"All pieces are downloaded.",
+            fun() ->
+                State = #state{
+                    pieces_left = []
+                },
+                ok = is_end(State),
+                1 = meck:num_calls(erltorrent_sup, stop_child, ['_'])
+            end
+        }]
+    }.
+
+
 %%assign_downloading_pieces_test_() ->
 %%    Ref = make_ref(),
 %%    % 200 bytes

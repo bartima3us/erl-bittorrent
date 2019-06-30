@@ -404,8 +404,7 @@ handle_info({tcp, _Port, Packet}, State) ->
                     {noreply, NewState#state{timeout_ref = undefined}};
                 false ->
                     ok = erltorrent_store:mark_piece_new(Hash, PieceId, LastBlockId),
-%%                    erltorrent_leech_server ! {invalid_hash, PieceId, {Ip, Port}, self()},
-                    {stop, invalid_hash, NewState#state{timeout_ref = update_timeout(State)}}
+                    {stop, invalid_hash, NewState}
             end;
         [_|_] ->
             ok = erltorrent_helper:get_packet(Socket),
@@ -438,14 +437,14 @@ handle_info({switch_piece, Piece, Timeout}, State) ->
         give_up_limit   = 3,
         parser_pid      = ParserPid,
         started_at      = erltorrent_helper:get_milliseconds_timestamp(),
-        parse_time      = 0
-%%        timeout         = Timeout
+        parse_time      = 0,
+        timeout         = Timeout
     },
     % @todo implement timeout
-%%    NewState2 = update_timeout(NewState),
+    NewState2 = update_timeout(NewState),
     erltorrent_peer_events:swap_sup_handler({OldPieceId, PeerIp, Port}, {PieceId, PeerIp, Port}, PieceId),
     self() ! request_piece,
-    {noreply, NewState};
+    {noreply, NewState2};
 
 %%  @doc
 %%  Event from other downloaders (erltorrent_peer_events handler)
@@ -862,27 +861,27 @@ get_file_name_test_() ->
     ].
 
 
-%%get_request_data_test_() ->
-%%    [
-%%        ?_assertEqual(
-%%            {ok, {<<0, 0, 64, 0>>, ?DEFAULT_REQUEST_LENGTH}},
-%%            get_request_data(1, 290006769)
-%%        ),
-%%        ?_assertEqual(
-%%            {ok, {<<0, 1, 128, 0>>, ?DEFAULT_REQUEST_LENGTH}},
-%%            get_request_data(6, 290006769)
-%%        ),
-%%        ?_assertEqual(
-%%            {ok, {<<0, 1, 128, 0>>, 1696}},
-%%            get_request_data(6, 100000)
-%%        ),
-%%        ?_assertEqual(
-%%            {ok, {<<0, 1, 192, 0>>, -14688}},
-%%            get_request_data(7, 100000)
-%%        )
-%%    ].
-%%
-%%
+get_request_data_test_() ->
+    [
+        ?_assertEqual(
+            {ok, {<<0, 0, 64, 0>>, ?DEFAULT_REQUEST_LENGTH}},
+            get_request_data(1, 290006769)
+        ),
+        ?_assertEqual(
+            {ok, {<<0, 1, 128, 0>>, ?DEFAULT_REQUEST_LENGTH}},
+            get_request_data(6, 290006769)
+        ),
+        ?_assertEqual(
+            {ok, {<<0, 1, 128, 0>>, 1696}},
+            get_request_data(6, 100000)
+        ),
+        ?_assertEqual(
+            {ok, {<<0, 1, 192, 0>>, -14688}},
+            get_request_data(7, 100000)
+        )
+    ].
+
+
 %%request_piece_test_() ->
 %%    {setup,
 %%        fun() ->
