@@ -365,6 +365,7 @@ handle_info({tcp, _Port, Packet}, State) ->
             case lists:member(BlockId, Blocks) of
                 true ->
                     erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
+                    % @todo maybe change to piece download time?
                     erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
                     erltorrent_peer_events:block_downloaded(PieceId, BlockId, self()),
                     {true, Piece};

@@ -374,7 +374,8 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime},
                     undefined;
                 true  ->
                     Fails = proplists:get_value(IpPort, SlowPeers, 1),
-                    get_avg_block_download_time(Hash) * BlocksInPiece * Fails
+                     % @todo fix average download speed fetching and remove that "* 2" constant
+                    get_avg_block_download_time(Hash) * 2 * Fails
             end,
             % If end game just enabled, stop slow leechers
             ok = case {CurrEndGame, EndGame} of
@@ -662,12 +663,16 @@ assign_peers([{IpPort, Ids} | T], State) ->
                 Timeout = case EndGame of
                     true  ->
                         Fails = proplists:get_value(IpPort, SlowPeers, 1),
-                        get_avg_block_download_time(Hash) * BlocksInPiece * Fails;
+                         % @todo fix average download speed fetching and remove that "* 2" constant
+                        get_avg_block_download_time(Hash) * 2 * Fails;
                     false ->
                         undefined
                 end,
                 {ok, Pid} = erltorrent_leecher:start_link(Files, Ip, Port, PeerId, Hash, Piece, Timeout),
-                lager:info("Starting leecher. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}]),
+                case EndGame of
+                    true  -> lager:info("Starting leecher under end game. PieceId=~p, IpPort=~p, Timeout=~p", [PieceId, {Ip, Port}, Timeout]);
+                    false -> lager:info("Starting leecher. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}])
+                end,
                 % Add new downloading pieces
                 AccState#state{
                     downloading_pieces = [
@@ -818,8 +823,8 @@ get_completion_percentage(State) ->
 %%  And return if end game need to be enabled.
 %%
 -spec find_not_downloading_piece(
-    State :: #state{},
-    Ids   :: [piece_id_int()]
+    State       :: #state{},
+    Ids         :: [piece_id_int()]
 ) ->
     {[#piece{}], EndGame :: boolean()}. % @todo remove list (#piece{} wrapper) ?
 
@@ -827,9 +832,10 @@ find_not_downloading_piece(State = #state{}, Ids) ->
     #state{
         downloading_pieces = DownloadingPieces,
         piece_size         = PieceSize,
-        pieces_hash        = PiecesHash
+        pieces_hash        = PiecesHash,
+        end_game           = CurrEndGame
     } = State,
-    {Pieces, EndGame} = lists:foldl(
+    {Pieces, EndGame0} = lists:foldl(
         fun
             (_Id, Acc = {_AccPiece, false}) ->
                 Acc;
@@ -854,9 +860,13 @@ find_not_downloading_piece(State = #state{}, Ids) ->
         {[], true},
         Ids
     ),
+    EndGame1 = case CurrEndGame of
+        true  -> true;
+        false -> EndGame0
+    end,
     case lists:reverse(Pieces) of
-        [Piece | _] -> {[Piece], EndGame};
-        []          -> {[], EndGame}
+        [Piece | _] -> {[Piece], EndGame1};
+        []          -> {[], EndGame1}
     end.
 
 
