@@ -38,6 +38,7 @@
 ]).
 
 -define(SERVER, ?MODULE).
+-define(SLOW_PEERS_FAILS_LIMIT, 20).
 
 -ifndef(TEST).
     -define(SOCKETS_FOR_DOWNLOADING_LIMIT, 100).
@@ -62,26 +63,26 @@
 }).
 
 -record(state, {
-    torrent_name                     :: string(),
-    files                            :: string(), % @todo make a proper type
-    piece_peers        = dict:new()  :: dict:type(), % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
-    peer_pieces        = dict:new()  :: dict:type(), % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
-    downloading_pieces = []          :: [#downloading_piece{}],
-    peers_power        = []          :: [#peer_power{}],
-    pieces_amount                    :: integer(),
-    peer_id                          :: binary(),
-    hash                             :: binary(),
-    piece_size                       :: integer(), % @todo rename to piece_size
-    last_piece_size                  :: integer(),
-    last_piece_id                    :: integer(),
-    pieces_hash                      :: binary(),
+    torrent_name                        :: string(),
+    files                               :: string(), % @todo make a proper type
+    piece_peers        = []             :: [], % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
+    peer_pieces        = []             :: [], % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
+    downloading_pieces = []             :: [#downloading_piece{}],
+    peers_power        = []             :: [#peer_power{}],
+    pieces_amount                       :: integer(),
+    peer_id                             :: binary(),
+    hash                                :: binary(),
+    piece_size                          :: integer(),
+    last_piece_size                     :: integer(),
+    last_piece_id                       :: integer(),
+    pieces_hash                         :: binary(),
     % @todo maybe need to persist give up limit?
-    give_up_limit      = 20          :: integer(),  % Give up all downloading limit if pieces hash is invalid
-    end_game           = false       :: boolean(),
-    pieces_left        = []          :: [integer()],
-    avg_block_download_time = 1000   :: integer(),
+    give_up_limit      = 20             :: integer(),  % Give up all downloading limit if pieces hash is invalid
+    end_game           = false          :: boolean(),
+    pieces_left        = []             :: [integer()],
     assign_peers_timer      = false,
-    blocks_in_piece                  :: integer() % How many blocks are in piece (not the last one which is shorter)
+    blocks_in_piece                     :: integer(), % How many blocks are in piece (not the last one which is shorter)
+    slow_peers         = []             :: [{ip_port(), integer()}] % Slow peers and how many times each of if have failed
 }).
 
 % make start
@@ -182,8 +183,8 @@ init([TorrentName]) ->
 %% Handle piece peers call
 %%
 handle_call({piece_peers, Id}, _From, State = #state{piece_peers = PiecesPeers}) ->
-    Result = case dict:is_key(Id, PiecesPeers) of
-        true  -> dict:fetch(Id, PiecesPeers);
+    Result = case proplists:is_defined(Id, PiecesPeers) of
+        true  -> proplists:get_value(Id, PiecesPeers);
         false -> {error, piece_id_not_exist}
     end,
     {reply, Result, State};
@@ -286,7 +287,7 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
     lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString)]),
     {ok, _} = erltorrent_peers_crawler_sup:start_child(AnnounceLink, HashBinString, PeerId, FullSize),
-    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> dict:store(Id, [], Acc) end, PiecePeers, IdsList),
+    NewPiecesPeers = lists:foldl(fun (Id, Acc) -> [{Id, []} | Acc] end, PiecePeers, IdsList),
     {ok, _MgrPid} = erltorrent_peer_events:start_link(),
     NewState = State#state{
         files                = lists:reverse(Files),
@@ -357,19 +358,23 @@ handle_info(assign_peers, State = #state{}) ->
 %%
 handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime}, State) ->
     #state{
-        peer_pieces             = PeerPieces,
-        avg_block_download_time = AvgBlockDownloadTime,
-        blocks_in_piece         = BlocksInPiece,
-        end_game                = CurrEndGame
+        hash            = Hash,
+        peer_pieces     = PeerPieces,
+        blocks_in_piece = BlocksInPiece,
+        end_game        = CurrEndGame,
+        slow_peers      = SlowPeers
     } = State,
     NewState0 = remove_piece_from_piece_peers(State, PieceId),
-    NewState1 = case dict:is_key(IpPort, PeerPieces) of
+    NewState1 = case proplists:is_defined(IpPort, PeerPieces) of
         true  ->
-            {ok, Ids} = dict:find(IpPort, PeerPieces),
+            Ids = proplists:get_value(IpPort, PeerPieces),
             {Pieces, EndGame} = find_not_downloading_piece(NewState0, Ids),
             Timeout = case EndGame of
-                false -> undefined;
-                true  -> AvgBlockDownloadTime * BlocksInPiece * 20 % @todo need to track fails and constantly increase a constant with new start. Also don't remove slow peers from list, just add to the end.
+                false ->
+                    undefined;
+                true  ->
+                    Fails = proplists:get_value(IpPort, SlowPeers, 1),
+                    get_avg_block_download_time(Hash) * BlocksInPiece * Fails
             end,
             % If end game just enabled, stop slow leechers
             ok = case {CurrEndGame, EndGame} of
@@ -388,13 +393,12 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime},
         false ->
             NewState0
     end,
-    NewState2 = update_avg_block_download_time(NewState1),
-    Progress = get_completion_percentage(NewState2),
+    Progress = get_completion_percentage(NewState1),
     [Completion] = io_lib:format("~.2f", [Progress]),
     lager:info("Completed! PieceId = ~p, IpPort=~p, parse time=~p s, completion=~p%, overall time=~p s~n", [PieceId, IpPort, (ParseTime / 1000000), list_to_float(Completion), (OverallTime / 1000)]),
-    is_end(NewState2),
+    is_end(NewState1),
     self() ! assign_peers,
-    {noreply, NewState2};
+    {noreply, NewState1};
 
 %% @doc
 %% Remove process from downloading pieces if it crashes.
@@ -413,14 +417,14 @@ handle_info({'EXIT', Pid, Reason}, State) when
             case Reason of
                 too_slow ->
                     lager:info("Stopped because too slow! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
-                    % Completely remove slow peers from available peers list
-                    remove_peer_from_peer_pieces(StateAcc0, IpPort);
+                    State1 = move_peer_to_the_end(StateAcc0, IpPort),
+                    add_to_slow_peers(State1, IpPort);
                 invalid_hash ->
                     lager:info("Stopped because invalid hash! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
-                    % @todo don't remove slow peers. Just move to the end of the list. To do this first need to remove a dict because they don't have a positions
-                    remove_peer_from_peer_pieces(StateAcc0, IpPort);
-                _        ->
-                    StateAcc0
+                    move_peer_to_the_end(StateAcc0, IpPort);
+                socket_error ->
+                    % Maybe remove on any socket error?
+                    remove_peer_from_peer_pieces(StateAcc0, IpPort)
             end;
         false ->
             State
@@ -435,16 +439,10 @@ handle_info({'EXIT', Pid, Reason}, State) when
 handle_info({'EXIT', Pid, _Reason}, State = #state{downloading_pieces = DownloadingPieces}) ->
     NewState = case lists:keysearch(Pid, #downloading_piece.pid, DownloadingPieces) of
         {value, #downloading_piece{piece_id = PieceId, key = {_, IpPort}}} ->
-            StateAcc0 = remove_from_downloading_pieces(State, {PieceId, IpPort}),
-            StateAcc0;
+            remove_from_downloading_pieces(State, {PieceId, IpPort});
         false ->
             State
     end,
-    % @todo need to make smarter algorithm
-%%    {_, NewPeerPieces} = case dict:is_key(IpPort, PeerPieces) of
-%%        true  -> dict:take(IpPort, PeerPieces);
-%%        false -> {ok, PeerPieces}
-%%    end,
     self() ! assign_peers,
     {noreply, NewState};
 
@@ -493,9 +491,9 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 %%
 add_to_peer_pieces(State = #state{peer_pieces = PeerPieces}, Ip, Port, Ids) ->
-    NewPeerPieces = case dict:find({Ip, Port}, PeerPieces) of
-        {ok, Pieces}  -> dict:store({Ip, Port}, lists:usort(Pieces ++ Ids), PeerPieces);
-        error         -> dict:store({Ip, Port}, Ids, PeerPieces)
+    NewPeerPieces = case proplists:get_value({Ip, Port}, PeerPieces) of
+        undefined -> [{{Ip, Port}, Ids} | PeerPieces];
+        Pieces    -> [{{Ip, Port}, lists:usort(Pieces ++ Ids)} | proplists:delete({Ip, Port}, PeerPieces)]
     end,
     State#state{peer_pieces = NewPeerPieces}.
 
@@ -504,44 +502,78 @@ add_to_peer_pieces(State = #state{peer_pieces = PeerPieces}, Ip, Port, Ids) ->
 %%
 %%
 add_to_piece_peers(State = #state{piece_peers = PiecePeers}, Ip, Port, Bitfield) ->
-    NewPiecesPeers = lists:foldl(
+    NewPiecePeers = lists:foldl(
         fun (Id, AccPiecePeers) ->
-            case dict:find(Id, AccPiecePeers) of
-                {ok, Peers}  ->
+            case proplists:get_value(Id, AccPiecePeers) of
+                undefined ->
+                    [{Id, [{Ip, Port}]} | AccPiecePeers];
+                Peers  ->
                     case lists:member({Ip, Port}, Peers) of
                         true  -> AccPiecePeers;
-                        false -> dict:append_list(Id, [{Ip, Port}], AccPiecePeers)
-                    end;
-                error ->
-                    dict:store(Id, [{Ip, Port}], AccPiecePeers)
+                        false -> [{Id, [{Ip, Port} | Peers]} | proplists:delete(Id, AccPiecePeers)]
+                    end
             end
         end,
         PiecePeers,
         Bitfield
     ),
-    State#state{piece_peers = NewPiecesPeers}.
+    State#state{piece_peers = sort_pieces_by_rarity(NewPiecePeers)}.
+
+
+%%  @private
+%%  Sort pieces making the rarest ones be in the beginning of the list
+%%
+sort_pieces_by_rarity(PiecePeers) ->
+    Positions = lists:usort([ {length(Peers), Id} || {Id, Peers} <- PiecePeers ]),
+    [ {Id, proplists:get_value(Id, PiecePeers)} || {_, Id} <- Positions ].
 
 
 %%
-%%  @todo move to the end of the list instead of deletion
+%%
 %%
 remove_piece_from_piece_peers(State = #state{piece_peers = PiecePeers, pieces_left = PiecesLeft}, PieceId) ->
-    {_Peers, NewPiecePeers} = case dict:is_key(PieceId, PiecePeers) of
-        true  -> dict:take(PieceId, PiecePeers);
-        false -> {[], PiecePeers}
+    NewPiecePeers = case proplists:is_defined(PieceId, PiecePeers) of
+        true  -> proplists:delete(PieceId, PiecePeers);
+        false -> PiecePeers
     end,
     State#state{piece_peers = NewPiecePeers, pieces_left = PiecesLeft -- [PieceId]}.
 
 
 %%
-%%  @todo move to the end of the list instead of deletion
+%%
 %%
 remove_peer_from_peer_pieces(State = #state{peer_pieces = PeerPieces}, IpPort) ->
-    {_, NewPeerPieces} = case dict:is_key(IpPort, PeerPieces) of
-        true  -> dict:take(IpPort, PeerPieces);
-        false -> {ok, PeerPieces}
+    NewPeerPieces = case proplists:is_defined(IpPort, PeerPieces) of
+        true  -> proplists:delete(IpPort, PeerPieces);
+        false -> PeerPieces
     end,
     State#state{peer_pieces = NewPeerPieces}.
+
+
+%%
+%%
+%%
+move_peer_to_the_end(State = #state{peer_pieces = PeerPieces0}, IpPort) ->
+    NewPeerPieces = case proplists:is_defined(IpPort, PeerPieces0) of
+        true  ->
+            PeerPieces1 = proplists:get_value(IpPort, PeerPieces0),
+            proplists:delete(IpPort, PeerPieces0) ++ [{IpPort, PeerPieces1}];
+        false ->
+            PeerPieces0
+    end,
+    State#state{peer_pieces = NewPeerPieces}.
+
+
+%%
+%%
+%%
+add_to_slow_peers(State = #state{slow_peers = SlowPeers}, IpPort) ->
+    NewSlowPeers = case proplists:get_value(IpPort, SlowPeers) of
+        undefined               -> [{IpPort, 1} | SlowPeers];
+        ?SLOW_PEERS_FAILS_LIMIT -> SlowPeers;
+        Fails                   -> [{IpPort, Fails + 1} | proplists:delete(IpPort, SlowPeers)]
+    end,
+    State#state{slow_peers = NewSlowPeers}.
 
 
 %%
@@ -573,18 +605,6 @@ add_to_downloading_piece(State = #state{downloading_pieces = DownloadingPieces},
 %%
 %%
 %%
-update_avg_block_download_time(State = #state{hash = Hash, end_game = EndGame, avg_block_download_time = AvgBlockDownloadTime}) ->
-    NewAvgBlockDownloadTime = case {EndGame, AvgBlockDownloadTime} of
-       {true, false} -> trunc(get_avg_block_download_time(Hash));
-       {true, _}     -> AvgBlockDownloadTime;
-       _             -> 0
-    end,
-    State#state{avg_block_download_time = NewAvgBlockDownloadTime}.
-
-
-%%
-%%
-%%
 do_speed_checking(State) ->
     #state{
         hash                = Hash,
@@ -592,6 +612,7 @@ do_speed_checking(State) ->
     } = State,
     AvgDownloadingTime = get_avg_block_download_time(Hash),
     % @todo don't stop such peers which has unique pieces
+    lager:info("Speed checking."),
     spawn(
         fun () ->
             ok = lists:foreach(
@@ -617,7 +638,7 @@ do_speed_checking(State) ->
 %% Assign free peers to download pieces
 %%
 assign_peers(State = #state{peer_pieces = PeerPieces}) ->
-    assign_peers(dict:to_list(PeerPieces), State).
+    assign_peers(PeerPieces, State).
 
 assign_peers([], State) ->
     State;
@@ -628,8 +649,8 @@ assign_peers([{IpPort, Ids} | T], State) ->
         peer_id                 = PeerId,
         hash                    = Hash,
         end_game                = CurrEndGame,
-        avg_block_download_time = AvgBlockDownloadTime,
-        blocks_in_piece         = BlocksInPiece
+        blocks_in_piece         = BlocksInPiece,
+        slow_peers              = SlowPeers
     } = State,
     % @todo maybe move this from fun because currently it is used only once
     StartPieceDownloadingFun = fun (Pieces, Ip, Port, EndGame) ->
@@ -639,8 +660,11 @@ assign_peers([{IpPort, Ids} | T], State) ->
                     downloading_pieces = AccDownloadingPieces
                 } = AccState,
                 Timeout = case EndGame of
-                    true  -> AvgBlockDownloadTime * BlocksInPiece;
-                    false -> undefined
+                    true  ->
+                        Fails = proplists:get_value(IpPort, SlowPeers, 1),
+                        get_avg_block_download_time(Hash) * BlocksInPiece * Fails;
+                    false ->
+                        undefined
                 end,
                 {ok, Pid} = erltorrent_leecher:start_link(Files, Ip, Port, PeerId, Hash, Piece, Timeout),
                 lager:info("Starting leecher. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}]),
@@ -696,7 +720,7 @@ is_end(#state{torrent_name = TorrentName, pieces_left = []}) ->
 
 
 %%
-%%
+%%  @todo suspicious download time counting. Maybe something wrong?
 %%
 get_avg_block_download_time(Hash) ->
     BlockTimes = erltorrent_store:read_blocks_time(Hash),
@@ -722,7 +746,7 @@ get_avg_block_download_time(Hash) ->
         {0, 0},
         BlockTimes
     ),
-    Time / Blocks.
+    trunc(Time / Blocks).
 
 
 %% @private
@@ -830,7 +854,7 @@ find_not_downloading_piece(State = #state{}, Ids) ->
         {[], true},
         Ids
     ),
-    case Pieces of
+    case lists:reverse(Pieces) of
         [Piece | _] -> {[Piece], EndGame};
         []          -> {[], EndGame}
     end.
@@ -882,14 +906,18 @@ assign_peers_test_() ->
             received_at  = 12
         }
     ],
-    PeerPieces1 = dict:store({{127,0,0,2}, 9870}, [1, 2, 3, 4], dict:new()),
-    PeerPieces2 = dict:store({{127,0,0,2}, 9871}, [3], PeerPieces1),
-    PeerPieces3 = dict:store({{127,0,0,2}, 9872}, [1, 2, 3], PeerPieces2),
-    PeerPieces4 = dict:store({{127,0,0,2}, 9873}, [2, 3], PeerPieces3),
-    PiecePeers1 = dict:store(1, [{{127,0,0,2}, 9870}, {{127,0,0,2}, 9872}], dict:new()),
-    PiecePeers2 = dict:store(2, [{{127,0,0,2}, 9870}, {{127,0,0,2}, 9872}, {{127,0,0,2}, 9873}], PiecePeers1),
-    PiecePeers3 = dict:store(3, [{{127,0,0,2}, 9870}, {{127,0,0,2}, 9871}, {{127,0,0,2}, 9872}, {{127,0,0,2}, 9873}, {{127,0,0,2}, 9874}], PiecePeers2),
-    PiecePeers4 = dict:store(4, [{{127,0,0,2}, 9870}], PiecePeers3),
+    PeerPieces = [
+        {{{127,0,0,2}, 9870}, [1, 2, 3, 4]},
+        {{{127,0,0,2}, 9871}, [3]},
+        {{{127,0,0,2}, 9872}, [1, 2, 3]},
+        {{{127,0,0,2}, 9873}, [2, 3]}
+    ],
+    PiecePeers = [
+        {4, [{{127,0,0,2}, 9870}]},
+        {1, [{{127,0,0,2}, 9870}, {{127,0,0,2}, 9872}]},
+        {2, [{{127,0,0,2}, 9870}, {{127,0,0,2}, 9872}, {{127,0,0,2}, 9873}]},
+        {3, [{{127,0,0,2}, 9870}, {{127,0,0,2}, 9871}, {{127,0,0,2}, 9872}, {{127,0,0,2}, 9873}]}
+    ],
     DownloadingPieces = [
         #downloading_piece{piece_id = 1, status = downloading, key = {1, {{127,0,0,2},9872}}, peer = {{127,0,0,2},9872}, pid = Pid},
         #downloading_piece{piece_id = 2, status = downloading, key = {2, {{127,0,0,2},9873}}, peer = {{127,0,0,2},9873}, pid = Pid},
@@ -898,13 +926,12 @@ assign_peers_test_() ->
     ],
     PiecesHash = <<"nuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQjnuYwPf0y1gILAuVAGsQj">>,
     State = #state{
-        piece_peers             = PiecePeers4,
-        peer_pieces             = PeerPieces4,
+        piece_peers             = PiecePeers,
+        peer_pieces             = PeerPieces,
         downloading_pieces      = DownloadingPieces,
         piece_size              = ?DEFAULT_REQUEST_LENGTH * 10,
         pieces_hash             = PiecesHash,
         last_piece_id           = 10,
-        avg_block_download_time = 10,
         blocks_in_piece         = 20,
         end_game                = false
     },
@@ -932,26 +959,28 @@ assign_peers_test_() ->
                 NewState = State#state{
                     end_game            = true,
                     downloading_pieces  = [
-                        #downloading_piece{piece_id = 1, status = downloading, key = {1, {{127,0,0,2},9872}}, peer = {{127,0,0,2},9872}, pid = Pid},
-                        #downloading_piece{piece_id = 4, status = downloading, key = {4, {{127,0,0,2},9870}}, peer = {{127,0,0,2},9870}, pid = Pid},
-                        #downloading_piece{piece_id = 2, status = downloading, key = {2, {{127,0,0,2},9873}}, peer = {{127,0,0,2},9873}, pid = Pid},
-                        #downloading_piece{piece_id = 3, status = downloading, key = {3, {{127,0,0,2},9871}}, peer = {{127,0,0,2},9871}, pid = Pid}
+                        #downloading_piece{piece_id = 2, status = downloading, key = {2, {{127,0,0,2},9872}}, peer = {{127,0,0,2},9872}, pid = Pid},
+                        #downloading_piece{piece_id = 3, status = downloading, key = {3, {{127,0,0,2},9871}}, peer = {{127,0,0,2},9871}, pid = Pid},
+                        #downloading_piece{piece_id = 1, status = downloading, key = {1, {{127,0,0,2},9870}}, peer = {{127,0,0,2},9870}, pid = Pid}
                     ]
                 },
                 ?assertEqual(
                     {noreply, NewState},
                     handle_info(assign_peers, State#state{downloading_pieces = []})
                 ),
-                4 = meck:num_calls(erltorrent_leecher, start_link, ['_', '_', '_', '_', '_', '_', '_'])
+                3 = meck:num_calls(erltorrent_leecher, start_link, ['_', '_', '_', '_', '_', '_', '_'])
             end
         }]
     }.
 
 
 add_to_peer_pieces_test_() ->
-    PeerPieces1 = dict:store({{127,0,0,1}, 9444}, [1, 2], dict:new()),
-    PeerPieces2 = dict:store({{127,0,0,1}, 9444}, [1, 2, 3], dict:new()),
-    PeerPieces3 = dict:store({{127,0,0,1}, 8888}, [1, 2], PeerPieces2),
+    PeerPieces1 = [{{{127,0,0,1}, 9444}, [1, 2]}],
+    PeerPieces2 = [{{{127,0,0,1}, 9444}, [1, 2, 3]}],
+    PeerPieces3 = [
+        {{{127,0,0,1}, 8888}, [1, 2]},
+        {{{127,0,0,1}, 9444}, [1, 2, 3]}
+    ],
     [
         ?_assertEqual(
             #state{peer_pieces = PeerPieces1},
@@ -973,10 +1002,10 @@ add_to_peer_pieces_test_() ->
 
 
 add_to_piece_peers_test_() ->
-    PiecePeers1 = dict:store(1, [{{127,0,0,1}, 9444}], dict:new()),
-    PiecePeers2 = dict:store(2, [{{127,0,0,1}, 9444}], PiecePeers1),
-    PiecePeers3 = dict:store(3, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 8888}], PiecePeers2),
-    PiecePeers4 = dict:store(4, [{{127,0,0,1}, 9444}], PiecePeers3),
+    PiecePeers1 = [{1, [{{127,0,0,1}, 9444}]}],
+    PiecePeers2 = [{1, [{{127,0,0,1}, 9444}]}, {2, [{{127,0,0,1}, 9444}]}],
+    PiecePeers3 = [{3, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 8888}]} | PiecePeers2],
+    PiecePeers4 = [{4, [{{127,0,0,1}, 9444}]} | PiecePeers3],
     [
         ?_assertEqual(
             #state{piece_peers = PiecePeers1},
@@ -991,7 +1020,7 @@ add_to_piece_peers_test_() ->
             add_to_piece_peers(#state{piece_peers = PiecePeers1}, {127,0,0,1}, 9444, [2])
         ),
         ?_assertEqual(
-            #state{piece_peers = PiecePeers4},
+            #state{piece_peers = sort_pieces_by_rarity(PiecePeers4)},
             add_to_piece_peers(#state{piece_peers = PiecePeers3}, {127,0,0,1}, 9444, [2, 3, 4])
         )
     ].
@@ -999,22 +1028,102 @@ add_to_piece_peers_test_() ->
 
 add_new_peer_to_pieces_peers_test_() ->
     ParsedBitfield = [{0, true}, {1, true}, {2, true}, {3, false}],
-    PiecePeers1 = dict:store(0, [{{127,0,0,1}, 9444}], dict:new()),
-    PiecePeers2 = dict:store(1, [{{127,0,0,1}, 9444}], PiecePeers1),
-    PiecePeers3 = dict:store(2, [{{127,0,0,1}, 9444}], PiecePeers2),
-    PeerPieces = dict:store({{127,0,0,1}, 9444}, [0, 1, 2], dict:new()),
-    State = #state{piece_peers = PiecePeers3, peer_pieces = PeerPieces},
-    UpdatedPeerPieces = dict:store({{127,0,0,1}, 8888}, [1], PeerPieces),
-    UpdatedPiecePeers = dict:store(1, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 8888}], PiecePeers3),
+    PiecePeers = [
+        {0, [{{127,0,0,1}, 9444}]},
+        {1, [{{127,0,0,1}, 9444}]},
+        {2, [{{127,0,0,1}, 9444}]}
+    ],
+    PeerPieces = [{{{127,0,0,1}, 9444}, [0, 1, 2]}],
+    State = #state{piece_peers = PiecePeers, peer_pieces = PeerPieces},
+    UpdatedPeerPieces = [{{{127,0,0,1}, 8888}, [1]} | PeerPieces],
+    UpdatedPiecePeers = [
+        {2, [{{127,0,0,1}, 9444}]},
+        {1, [{{127,0,0,1}, 8888}, {{127,0,0,1}, 9444}]},
+        {0, [{{127,0,0,1}, 9444}]}
+    ],
     [
         ?_assertEqual(
-            {noreply, #state{piece_peers = PiecePeers3, peer_pieces = PeerPieces}},
+            {noreply, #state{piece_peers = PiecePeers, peer_pieces = PeerPieces}},
             handle_info({bitfield, ParsedBitfield, {127,0,0,1}, 9444}, #state{})
         ),
         ?_assertEqual(
-            {noreply, #state{piece_peers = UpdatedPiecePeers, peer_pieces = UpdatedPeerPieces}},
+            {noreply, #state{piece_peers = sort_pieces_by_rarity(UpdatedPiecePeers), peer_pieces = UpdatedPeerPieces}},
             handle_info({have, 1, {127,0,0,1}, 8888}, State)
         )
+    ].
+
+
+sort_pieces_by_rarity_test_() ->
+    PiecePeers = [
+        {0, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 9445}]},
+        {1, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 9445}, {{127,0,0,1}, 9446}]},
+        {2, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 9447}]},
+        {3, [{{127,0,0,1}, 9447}]}
+    ],
+    Result = [
+        {3, [{{127,0,0,1}, 9447}]},
+        {0, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 9445}]},
+        {2, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 9447}]},
+        {1, [{{127,0,0,1}, 9444}, {{127,0,0,1}, 9445}, {{127,0,0,1}, 9446}]}
+    ],
+    [
+        ?_assertEqual(
+            Result,
+            sort_pieces_by_rarity(PiecePeers)
+        )
+    ].
+
+
+move_peer_to_the_end_test_() ->
+    PeerPieces = [
+        {{{127,0,0,2}, 9870}, [1, 2, 3, 4]},
+        {{{127,0,0,2}, 9871}, [3]},
+        {{{127,0,0,2}, 9872}, [1, 2, 3]},
+        {{{127,0,0,2}, 9873}, [2, 3]}
+    ],
+    Result = [
+        {{{127,0,0,2}, 9870}, [1, 2, 3, 4]},
+        {{{127,0,0,2}, 9872}, [1, 2, 3]},
+        {{{127,0,0,2}, 9873}, [2, 3]},
+        {{{127,0,0,2}, 9871}, [3]}
+    ],
+    [
+        ?_assertEqual(
+            #state{peer_pieces = Result},
+            move_peer_to_the_end(#state{peer_pieces = PeerPieces}, {{127,0,0,2}, 9871})
+        )
+    ].
+
+
+add_to_slow_peers_test_() ->
+    [
+        {"Add new slow peer.",
+            fun() ->
+                SlowPeers = [{{{127,0,0,2}, 9872}, 2}],
+                ?assertEqual(
+                    #state{slow_peers = [{{{127,0,0,2}, 9871}, 1}, {{{127,0,0,2}, 9872}, 2}]},
+                    add_to_slow_peers(#state{slow_peers = SlowPeers}, {{127,0,0,2}, 9871})
+                )
+            end
+        },
+        {"Increase existing slow peer fails.",
+            fun() ->
+                SlowPeers = [{{{127,0,0,2}, 9872}, 2}, {{{127,0,0,2}, 9874}, 4}],
+                ?assertEqual(
+                    #state{slow_peers = [{{{127,0,0,2}, 9874}, 5}, {{{127,0,0,2}, 9872}, 2}]},
+                    add_to_slow_peers(#state{slow_peers = SlowPeers}, {{127,0,0,2}, 9874})
+                )
+            end
+        },
+        {"Slow peer fails limit has reached.",
+            fun() ->
+                SlowPeers = [{{{127,0,0,2}, 9872}, 2}, {{{127,0,0,2}, 9874}, ?SLOW_PEERS_FAILS_LIMIT}],
+                ?assertEqual(
+                    #state{slow_peers = SlowPeers},
+                    add_to_slow_peers(#state{slow_peers = SlowPeers}, {{127,0,0,2}, 9874})
+                )
+            end
+        }
     ].
 
 
@@ -1093,9 +1202,11 @@ get_completion_percentage_test_() ->
 
 
 get_piece_peers_test_() ->
-    PiecesPeers1 = dict:store(0, [], dict:new()),
-    PiecesPeers2 = dict:store(1, [{127,0,0,3}, {127,0,0,2}], PiecesPeers1),
-    State = #state{piece_peers = PiecesPeers2, pieces_amount = 100},
+    PiecesPeers = [
+        {0, []},
+        {1, [{127,0,0,3}, {127,0,0,2}]}
+    ],
+    State = #state{piece_peers = PiecesPeers, pieces_amount = 100},
     [
         ?_assertEqual(
             {reply, [], State},

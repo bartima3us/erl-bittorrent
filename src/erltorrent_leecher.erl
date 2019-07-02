@@ -440,7 +440,6 @@ handle_info({switch_piece, Piece, Timeout}, State) ->
         parse_time      = 0,
         timeout         = Timeout
     },
-    % @todo implement timeout
     NewState2 = update_timeout(NewState),
     erltorrent_peer_events:swap_sup_handler({OldPieceId, PeerIp, Port}, {PieceId, PeerIp, Port}, PieceId),
     self() ! request_piece,
