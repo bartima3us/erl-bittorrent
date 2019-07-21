@@ -20,14 +20,16 @@
 -export([
     insert_file/2,
     read_file/1,
-    read_piece/5,
+    read_piece/6,
     read_pieces/1,
     mark_piece_completed/2,
     mark_piece_new/3,
     update_blocks_time/6,
     read_blocks_time/1,
     read_blocks_time/2,
-    read_blocks_time/3
+    read_blocks_time/3,
+    read_completed_pieces_time/1,
+    read_peer_pieces_time/2
 ]).
 
 -export([
@@ -73,7 +75,11 @@ insert_file(Hash, FileName) ->
 %%
 read_pieces(Hash) ->
     Fun = fun() ->
-        mnesia:match_object({erltorrent_store_piece, '_', Hash, '_', '_', '_', '_', '_'})
+        MatchHead = #erltorrent_store_piece{
+            hash     = Hash,
+            _        = '_'
+        },
+        mnesia:match_object(MatchHead)
     end,
     {atomic, Result} = mnesia:transaction(Fun),
     Result.
@@ -82,9 +88,14 @@ read_pieces(Hash) ->
 %% @doc
 %% Get current piece state. Update it if needed.
 %% @todo rewrite this function, maybe split into 2
-read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAction =:= read; SubAction =:= update ->
+read_piece(Hash, IpPort, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAction =:= read; SubAction =:= update ->
     Fun = fun() ->
-        case mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}) of
+        MatchHead = #erltorrent_store_piece{
+            hash     = Hash,
+            piece_id = PieceId,
+            _        = '_'
+        },
+        case mnesia:match_object(MatchHead) of
             [Result = #erltorrent_store_piece{blocks = Blocks}] ->
                 case SubAction of
                     read   ->
@@ -103,6 +114,7 @@ read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAct
                 Piece = #erltorrent_store_piece{
                     id          = os:timestamp(),
                     hash        = Hash,
+                    ip_port     = IpPort,
                     piece_id    = PieceId,
                     blocks      = lists:seq(0, LastBlockId - 1),
                     status      = downloading,
@@ -122,7 +134,12 @@ read_piece(Hash, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAct
 update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
     Id = {PieceId, BlockId},
     Fun = fun() ->
-        case mnesia:match_object({erltorrent_store_peer, '_', Hash, IpPort, '_'}) of
+        MatchHead = #erltorrent_store_peer{
+            hash     = Hash,
+            ip_port  = IpPort,
+            _        = '_'
+        },
+        case mnesia:match_object(MatchHead) of
             [Result = #erltorrent_store_peer{blocks_time = BlocksTime}] ->
                 NewBlocksTime = case lists:keysearch(Id, #erltorrent_store_block_time.id, BlocksTime) of
                     false ->
@@ -186,6 +203,42 @@ read_blocks_time(Hash) ->
 
 
 %%  @doc
+%%  Read all completed pieces downloading time.
+%%
+read_completed_pieces_time(Hash) ->
+    MatchHead = #erltorrent_store_piece{
+        hash        = Hash,
+        started_at  = '$1',
+        updated_at  = '$2',
+        status      = completed,
+        _           = '_'
+    },
+    Fun = fun() ->
+        mnesia:select(erltorrent_store_piece, [{MatchHead, [], [['$1', '$2']]}])
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%%  @doc
+%%  Read peer pieces downloading time of peer.
+%%
+read_peer_pieces_time(Hash, IpPort) ->
+    MatchHead = #erltorrent_store_piece{
+        hash        = Hash,
+        ip_port     = IpPort,
+        started_at  = '$1',
+        updated_at  = '$2',
+        _           = '_'
+    },
+    Fun = fun() ->
+        mnesia:select(erltorrent_store_piece, [{MatchHead, [], [['$1', '$2']]}])
+    end,
+    {atomic, Result} = mnesia:transaction(Fun),
+    Result.
+
+
+%%  @doc
 %%  Read peer blocks time
 %%
 read_blocks_time(Hash, IpPort) ->
@@ -221,7 +274,12 @@ read_blocks_time(Hash, IpPort, PieceId) ->
 %%
 mark_piece_completed(Hash, PieceId) ->
     Fun = fun() ->
-        [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
+        MatchHead = #erltorrent_store_piece{
+            hash     = Hash,
+            piece_id = PieceId,
+            _        = '_'
+        },
+        [Result = #erltorrent_store_piece{}] = mnesia:match_object(MatchHead),
         UpdatedPiece = Result#erltorrent_store_piece{
             status  = completed
         },
@@ -236,7 +294,12 @@ mark_piece_completed(Hash, PieceId) ->
 %%
 mark_piece_new(Hash, PieceId, LastBlockId) ->
     Fun = fun() ->
-        [Result = #erltorrent_store_piece{}] = mnesia:match_object({erltorrent_store_piece, '_', Hash, PieceId, '_', '_', '_', '_'}),
+        MatchHead = #erltorrent_store_piece{
+            hash     = Hash,
+            piece_id = PieceId,
+            _        = '_'
+        },
+        [Result = #erltorrent_store_piece{}] = mnesia:match_object(MatchHead),
         UpdatedPiece = Result#erltorrent_store_piece{
             blocks      = lists:seq(0, LastBlockId),
             started_at  = erltorrent_helper:get_milliseconds_timestamp(),

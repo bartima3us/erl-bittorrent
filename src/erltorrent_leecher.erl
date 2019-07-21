@@ -15,7 +15,7 @@
 -include("erltorrent.hrl").
 -include("erltorrent_store.hrl").
 
--define(STOPPED_PEER_MULTIPLIER, 5).
+-define(STOPPED_PEER_MULTIPLIER, 4).
 -define(SLOW_PEER_MULTIPLIER, 3).
 
 %% API
@@ -223,7 +223,7 @@ handle_info(start, State) ->
         last_block_id = LastBlockId,
         status = not_requested
     } = PieceData,
-    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, 0, read),
+    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, {PeerIp, Port}, PieceId, LastBlockId, 0, read),
     case do_connect(PeerIp, Port) of
         {ok, Socket} ->
             {ok, ParserPid} = erltorrent_packet:start_link(),
@@ -364,7 +364,7 @@ handle_info({tcp, _Port, Packet}, State) ->
             BlockId = trunc(BlockBegin / ?DEFAULT_REQUEST_LENGTH),
             case lists:member(BlockId, Blocks) of
                 true ->
-                    erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
+                    erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0, BlockId, update),
                     % @todo maybe change to piece download time?
                     erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
                     erltorrent_peer_events:block_downloaded(PieceId, BlockId, self()),
@@ -380,7 +380,7 @@ handle_info({tcp, _Port, Packet}, State) ->
         unchoke ->
             case lists:filtermap(UpdateFun, Data) of
                 [_|_]  ->
-                    #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, PieceId, 0, 0, read),
+                    #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0, 0, read),
                     PieceData#piece{blocks = UpdatedBlocks, status = not_requested};
                 _      ->
                     PieceData
@@ -431,7 +431,7 @@ handle_info({switch_piece, Piece, Timeout}, State) ->
         last_block_id = LastBlockId,
         status        = not_requested
     } = Piece,
-    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, PieceId, LastBlockId, 0, read),
+    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, {PeerIp, Port}, PieceId, LastBlockId, 0, read),
     {ok, ParserPid} = erltorrent_packet:start_link(),
     NewState = State#state{
         piece_data      = Piece#piece{blocks = Blocks},
@@ -462,7 +462,7 @@ handle_info({block_downloaded, BlockId}, State) ->
         blocks      = Blocks,
         piece_size  = PieceSize
     } = Piece,
-    erltorrent_store:read_piece(Hash, PieceId, 0, BlockId, update),
+    erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0, BlockId, update),
     erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
     NewState = State#state{
         piece_data  = Piece#piece{
@@ -477,7 +477,7 @@ handle_info({block_downloaded, BlockId}, State) ->
 
 
 %%
-%%
+%%  @todo maybe stopping change to round-robin scheduling?
 %%
 handle_info({check_speed, AvgSpeed}, State) ->
     case get_speed_status(State, AvgSpeed) of
@@ -696,45 +696,44 @@ get_speed_status(State, AvgSpeed) ->
         peer_ip = PeerIp,
         port    = Port
     } = State,
-    BlockTimes = erltorrent_store:read_blocks_time(Hash, {PeerIp, Port}),
+    PieceTimes = erltorrent_store:read_peer_pieces_time(Hash, {PeerIp, Port}),
     CurrentTime = erltorrent_helper:get_milliseconds_timestamp(),
-    case BlockTimes of
+    case PieceTimes of
         [_|_] ->
             SpeedStatus = lists:foldl(
-                % @todo DRY - same fun in erltorrent_server:get_avg_block_download_time/1
+                % @todo DRY - same fun in erltorrent_server:get_avg_piece_download_time/1
                 fun
-                    (BlockTime, {AccTime, AccBlocks}) ->
-                        #erltorrent_store_block_time{
-                            requested_at = RequestedAt,
-                            received_at  = ReceivedAt
-                        } = BlockTime,
-                        case ReceivedAt of
-                            ReceivedAt when is_integer(RequestedAt),
-                                is_integer(ReceivedAt),
-                                is_integer(AccBlocks)
+                    ([StartedAt, UpdatedAt], {AccTime, AccPieces}) ->
+                        case UpdatedAt of
+                            UpdatedAt when is_integer(StartedAt),
+                                is_integer(UpdatedAt),
+                                is_integer(AccPieces)
                                 ->
-                                {AccTime + (ReceivedAt - RequestedAt), AccBlocks + 1};
+                                {AccTime + (UpdatedAt - StartedAt), AccPieces + 1};
                             undefined  ->
-                                case (CurrentTime - RequestedAt) > (AvgSpeed * ?STOPPED_PEER_MULTIPLIER) of
+                                case (CurrentTime - StartedAt) > (AvgSpeed * ?STOPPED_PEER_MULTIPLIER) of
                                     true  -> too_slow;
-                                    false -> {AccTime, AccBlocks}
+                                    false -> {AccTime, AccPieces}
                                 end;
                             _          ->
-                                {AccTime, AccBlocks}
+                                {AccTime, AccPieces}
                         end;
                     (_BlockTime, too_slow) ->
                         too_slow
                 end,
                 {0, 0},
-                BlockTimes
+                PieceTimes
             ),
             case SpeedStatus of
                 too_slow ->
                     too_slow;
-                {Time, Blocks} ->
-                    case (Time / Blocks) > (AvgSpeed * ?SLOW_PEER_MULTIPLIER) of
-                        true  -> too_slow;
-                        false -> ok
+                {Time, Pieces} ->
+                    case (Time / Pieces) > (AvgSpeed * ?SLOW_PEER_MULTIPLIER) of
+                        true  ->
+                            lager:info("Too slow. Peer=~p, time=~p, pieces=~p, avg speed=~p", [{PeerIp, Port}, Time, Pieces, AvgSpeed]),
+                            too_slow;
+                        false ->
+                            ok
                     end
             end;
         []  ->
@@ -759,11 +758,17 @@ cancel_timeout_timer(#state{timeout_ref = TimeoutRef}) ->
 %%
 update_timeout(State = #state{timeout = Timeout}) ->
     cancel_timeout_timer(State),
-    Ref = case Timeout of
-        undefined   -> undefined;
-        Timeout     -> erlang:send_after(Timeout, self(), cancel)
+    {Ref, NT} = case Timeout of
+        undefined   ->
+            {undefined, undefined};
+        Timeout     ->
+            NewTimeout = case Timeout < 1000 of
+                true  -> Timeout * ?SLOW_PEER_MULTIPLIER;
+                false -> Timeout
+            end,
+            {erlang:send_after(NewTimeout, self(), cancel), NewTimeout}
     end,
-    State#state{timeout_ref = Ref}.
+    State#state{timeout = NT, timeout_ref = Ref}.
 
 
 

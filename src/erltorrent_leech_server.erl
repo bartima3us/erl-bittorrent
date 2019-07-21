@@ -17,14 +17,19 @@
 
 %% API
 -export([
-    start_link/1,
+    start_link/1
+]).
+
+%% API mostly for debugging purposes
+-export([
     piece_peers/1,
+    peer_pieces/1,
+    peer_pieces/2,
     downloading_piece/1,
+    count_downloading_pieces/0,
     all_pieces_except_completed/0,
     get_completion_percentage/1,
-    all_peers/0,
-    count_downloading_pieces/0,
-    avg_block_download_time/0
+    avg_piece_download_time/0
 ]).
 
 %% gen_server callbacks
@@ -56,19 +61,12 @@
     status      = false :: false | downloading | completed
 }).
 
--record(peer_power, {
-    peer                :: ip_port(),
-    time                :: integer(), % The lower is the better! (Block1 received_at - requested_at) + ... + (BlockN received_at - requested_at)
-    blocks_count        :: integer()  % How many blocks have already downloaded
-}).
-
 -record(state, {
     torrent_name                        :: string(),
     files                               :: string(), % @todo make a proper type
     piece_peers        = []             :: [], % [{PieceIdN, [Peer1, Peer2, ..., PeerN]}]
     peer_pieces        = []             :: [], % [{{Ip, Port}, [PieceId1, PieceId2, ..., PieceIdN]}]
     downloading_pieces = []             :: [#downloading_piece{}],
-    peers_power        = []             :: [#peer_power{}],
     pieces_amount                       :: integer(),
     peer_id                             :: binary(),
     hash                                :: binary(),
@@ -95,18 +93,6 @@
 %%% API
 %%%===================================================================
 
-%% @doc
-%% Start download
-%%
-download() ->
-    gen_server:cast(?SERVER, download).
-
-
-%% @doc
-%% Get all peers
-%%
-all_peers() ->
-    gen_server:call(?SERVER, all_peers).
 
 
 %% @doc
@@ -114,6 +100,20 @@ all_peers() ->
 %%
 piece_peers(Id) ->
     gen_server:call(?SERVER, {piece_peers, Id}).
+
+
+%% @doc
+%% Get peer pieces
+%%
+peer_pieces(IpPort) ->
+    gen_server:call(?SERVER, {peer_pieces, IpPort}).
+
+
+%% @doc
+%% Get peer pieces
+%%
+peer_pieces(IpPort, PieceId) ->
+    gen_server:call(?SERVER, {peer_pieces, IpPort, PieceId}).
 
 
 %% @doc
@@ -133,8 +133,8 @@ count_downloading_pieces() ->
 %%
 %%
 %%
-avg_block_download_time() ->
-    gen_server:call(?SERVER, avg_block_download_time).
+avg_piece_download_time() ->
+    gen_server:call(?SERVER, avg_piece_download_time).
 
 
 %% @doc
@@ -190,6 +190,28 @@ handle_call({piece_peers, Id}, _From, State = #state{piece_peers = PiecesPeers})
     {reply, Result, State};
 
 %% @doc
+%% Handle peer pieces call
+%%
+handle_call({peer_pieces, IpPort}, _From, State = #state{peer_pieces = PeerPieces}) ->
+    Result = case proplists:is_defined(IpPort, PeerPieces) of
+        true  -> proplists:get_value(IpPort, PeerPieces);
+        false -> {error, peer_not_exist}
+    end,
+    {reply, Result, State};
+
+%% @doc
+%% Handle peer pieces call
+%%
+handle_call({peer_pieces, IpPort, PieceId}, _From, State = #state{peer_pieces = PeerPieces}) ->
+    Result = case proplists:is_defined(IpPort, PeerPieces) of
+        true  ->
+            lists:member(PieceId, proplists:get_value(IpPort, PeerPieces));
+        false ->
+            {error, peer_not_exist}
+    end,
+    {reply, Result, State};
+
+%% @doc
 %% Handle downloading piece call
 %%
 handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = DownloadingPieces}) ->
@@ -215,8 +237,8 @@ handle_call(count_downloading_pieces, _From, State = #state{}) ->
 %%
 %%
 %%
-handle_call(avg_block_download_time, _From, State = #state{hash = Hash}) ->
-    {reply, get_avg_block_download_time(Hash), State};
+handle_call(get_avg_piece_download_time, _From, State = #state{hash = Hash}) ->
+    {reply, get_avg_piece_download_time(Hash), State};
 
 
 %% @doc
@@ -285,7 +307,7 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
     IdsList = lists:seq(0, LastPieceId),
     AnnounceLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
     PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
-    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString)]),
+    lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash representation=~p, Hash real=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString), HashBinString]),
     {ok, _} = erltorrent_peers_crawler_sup:start_child(AnnounceLink, HashBinString, PeerId, FullSize),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> [{Id, []} | Acc] end, PiecePeers, IdsList),
     {ok, _MgrPid} = erltorrent_peer_events:start_link(),
@@ -375,7 +397,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
                 true  ->
                     Fails = proplists:get_value(IpPort, SlowPeers, 1),
                      % @todo fix average download speed fetching and remove that "* 2" constant
-                    get_avg_block_download_time(Hash) * 2 * Fails
+                    get_avg_piece_download_time(Hash) * 2 * Fails
             end,
             % If end game just enabled, stop slow leechers
             ok = case {CurrEndGame, EndGame} of
@@ -611,7 +633,7 @@ do_speed_checking(State) ->
         hash                = Hash,
         downloading_pieces  = DownloadingPieces
     } = State,
-    AvgDownloadingTime = get_avg_block_download_time(Hash),
+    AvgDownloadingTime = get_avg_piece_download_time(Hash),
     % @todo don't stop such peers which has unique pieces
     lager:info("Speed checking."),
     spawn(
@@ -635,6 +657,14 @@ do_speed_checking(State) ->
 %%% Other internal functions
 %%%===================================================================
 
+
+%% @private
+%% Start download
+%%
+download() ->
+    gen_server:cast(?SERVER, download).
+
+
 %% @private
 %% Assign free peers to download pieces
 %%
@@ -650,7 +680,6 @@ assign_peers([{IpPort, Ids} | T], State) ->
         peer_id                 = PeerId,
         hash                    = Hash,
         end_game                = CurrEndGame,
-        blocks_in_piece         = BlocksInPiece,
         slow_peers              = SlowPeers
     } = State,
     % @todo maybe move this from fun because currently it is used only once
@@ -664,7 +693,7 @@ assign_peers([{IpPort, Ids} | T], State) ->
                     true  ->
                         Fails = proplists:get_value(IpPort, SlowPeers, 1),
                          % @todo fix average download speed fetching and remove that "* 2" constant
-                        get_avg_block_download_time(Hash) * 2 * Fails;
+                        get_avg_piece_download_time(Hash) * Fails;
                     false ->
                         undefined
                 end,
@@ -724,34 +753,29 @@ is_end(#state{torrent_name = TorrentName, pieces_left = []}) ->
     ok = erltorrent_sup:stop_child(TorrentName). % @todo is it a proper way to stop? Match will never happen
 
 
+%%  @private
+%%  Get current average piece downloading time.
 %%
-%%  @todo suspicious download time counting. Maybe something wrong?
-%%
-get_avg_block_download_time(Hash) ->
-    BlockTimes = erltorrent_store:read_blocks_time(Hash),
-    % @todo Maybe don't recount from beginning every time?
-    {Time, Blocks} = lists:foldl(
-        fun (BlockTime, {AccTime, AccBlocks}) ->
-            #erltorrent_store_block_time{
-                requested_at = RequestedAt,
-                received_at  = ReceivedAt
-            } = BlockTime,
-            case ReceivedAt of
-                ReceivedAt when is_integer(RequestedAt),
-                    is_integer(ReceivedAt),
-                    is_integer(AccBlocks)
+get_avg_piece_download_time(Hash) ->
+    PieceTimes = erltorrent_store:read_completed_pieces_time(Hash),
+    {Time, Pieces} = lists:foldl(
+        fun ([StartedAt, UpdatedAt], {AccTime, AccPieces}) ->
+            case UpdatedAt of
+                UpdatedAt when is_integer(StartedAt),
+                    is_integer(UpdatedAt),
+                    is_integer(AccPieces)
                     ->
-                    {AccTime + (ReceivedAt - RequestedAt), AccBlocks + 1};
+                    {AccTime + (UpdatedAt - StartedAt), AccPieces + 1};
                 undefined  ->
-                    {AccTime, AccBlocks}; % @todo Need to add some fake ReceivedAt if it was requested long time ago
+                    {AccTime, AccPieces}; % @todo Need to add some fake ReceivedAt if it was requested long time ago
                 _          ->
-                    {AccTime, AccBlocks}
+                    {AccTime, AccPieces}
             end
         end,
         {0, 0},
-        BlockTimes
+        PieceTimes
     ),
-    trunc(Time / Blocks).
+    trunc(Time / Pieces).
 
 
 %% @private
@@ -910,11 +934,8 @@ make_downloading_pieces(Hash, IdsList) ->
 
 assign_peers_test_() ->
     Pid = list_to_pid("<0.0.1>"),
-    Blocks = [
-        #erltorrent_store_block_time{
-            requested_at = 10,
-            received_at  = 12
-        }
+    PieceTimes = [
+        [10, 12]
     ],
     PeerPieces = [
         {{{127,0,0,2}, 9870}, [1, 2, 3, 4]},
@@ -949,7 +970,7 @@ assign_peers_test_() ->
         fun() ->
             ok = meck:new([erltorrent_leecher, erltorrent_store]),
             ok = meck:expect(erltorrent_leecher, start_link, ['_', '_', '_', '_', '_', '_', '_'], {ok, Pid}),
-            ok = meck:expect(erltorrent_store, read_blocks_time, ['_'], Blocks)
+            ok = meck:expect(erltorrent_store, read_completed_pieces_time, ['_'], PieceTimes)
         end,
         fun(_) ->
             true = meck:validate([erltorrent_leecher, erltorrent_store]),
