@@ -400,7 +400,7 @@ handle_info({tcp, _Port, Packet}, State) ->
                 true ->
                     ok = erltorrent_store:mark_piece_completed(Hash, PieceId),
                     CompletedAt = erltorrent_helper:get_milliseconds_timestamp(),
-                    erltorrent_leech_server ! {completed, {Ip, Port}, PieceId, self(), ParseTime, CompletedAt - StartedAt},
+                    erltorrent_leech_server ! {completed, {Ip, Port}, PieceId, self(), CompletedAt - StartedAt},
                     cancel_timeout_timer(NewState),
                     {noreply, NewState#state{timeout_ref = undefined}};
                 false ->

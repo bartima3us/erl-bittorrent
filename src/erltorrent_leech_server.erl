@@ -356,7 +356,7 @@ handle_info(assign_peers, State = #state{}) ->
 %% @doc
 %% Piece downloaded successfully
 %%
-handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime}, State) ->
+handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
     #state{
         hash            = Hash,
         peer_pieces     = PeerPieces,
@@ -396,7 +396,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, ParseTime, OverallTime},
     end,
     Progress = get_completion_percentage(NewState1),
     [Completion] = io_lib:format("~.2f", [Progress]),
-    lager:info("Completed! PieceId = ~p, IpPort=~p, parse time=~p s, completion=~p%, overall time=~p s~n", [PieceId, IpPort, (ParseTime / 1000000), list_to_float(Completion), (OverallTime / 1000)]),
+    lager:info("Completed! PieceId = ~p, IpPort=~p, completion=~p%, overall time=~p s~n", [PieceId, IpPort, list_to_float(Completion), (OverallTime / 1000)]),
     is_end(NewState1),
     self() ! assign_peers,
     {noreply, NewState1};
