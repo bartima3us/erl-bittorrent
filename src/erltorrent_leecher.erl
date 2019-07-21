@@ -16,7 +16,7 @@
 -include("erltorrent_store.hrl").
 
 -define(STOPPED_PEER_MULTIPLIER, 4).
--define(SLOW_PEER_MULTIPLIER, 3).
+-define(SLOW_PEER_MULTIPLIER, 4).
 
 %% API
 -export([

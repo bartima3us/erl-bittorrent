@@ -396,8 +396,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
                     undefined;
                 true  ->
                     Fails = proplists:get_value(IpPort, SlowPeers, 1),
-                     % @todo fix average download speed fetching and remove that "* 2" constant
-                    get_avg_piece_download_time(Hash) * 2 * Fails
+                    get_avg_piece_download_time(Hash) * Fails
             end,
             % If end game just enabled, stop slow leechers
             ok = case {CurrEndGame, EndGame} of
@@ -692,7 +691,6 @@ assign_peers([{IpPort, Ids} | T], State) ->
                 Timeout = case EndGame of
                     true  ->
                         Fails = proplists:get_value(IpPort, SlowPeers, 1),
-                         % @todo fix average download speed fetching and remove that "* 2" constant
                         get_avg_piece_download_time(Hash) * Fails;
                     false ->
                         undefined
@@ -767,7 +765,7 @@ get_avg_piece_download_time(Hash) ->
                     ->
                     {AccTime + (UpdatedAt - StartedAt), AccPieces + 1};
                 undefined  ->
-                    {AccTime, AccPieces}; % @todo Need to add some fake ReceivedAt if it was requested long time ago
+                    {AccTime, AccPieces};
                 _          ->
                     {AccTime, AccPieces}
             end
