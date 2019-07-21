@@ -20,7 +20,8 @@
 -export([
     insert_file/2,
     read_file/1,
-    read_piece/6,
+    read_piece/4,
+    update_piece/5,
     read_pieces/1,
     mark_piece_completed/2,
     mark_piece_new/3,
@@ -87,8 +88,8 @@ read_pieces(Hash) ->
 
 %% @doc
 %% Get current piece state. Update it if needed.
-%% @todo rewrite this function, maybe split into 2
-read_piece(Hash, IpPort, PieceId, LastBlockId, DownloadedBlockId, SubAction) when SubAction =:= read; SubAction =:= update ->
+%%
+read_piece(Hash, IpPort, PieceId, LastBlockId) ->
     Fun = fun() ->
         MatchHead = #erltorrent_store_piece{
             hash     = Hash,
@@ -96,20 +97,8 @@ read_piece(Hash, IpPort, PieceId, LastBlockId, DownloadedBlockId, SubAction) whe
             _        = '_'
         },
         case mnesia:match_object(MatchHead) of
-            [Result = #erltorrent_store_piece{blocks = Blocks}] ->
-                case SubAction of
-                    read   ->
-                        Result;
-                    update ->
-                        NewBlocks = Blocks -- [DownloadedBlockId],
-                        UpdatedPiece = Result#erltorrent_store_piece{
-                            blocks      = NewBlocks,
-                            updated_at  = erltorrent_helper:get_milliseconds_timestamp()
-                        },
-                        % @todo solve error after download restarting
-                        mnesia:write(erltorrent_store_piece, UpdatedPiece, write),
-                        UpdatedPiece
-                end;
+            [Result = #erltorrent_store_piece{}] ->
+                Result;
             []       ->
                 Piece = #erltorrent_store_piece{
                     id          = os:timestamp(),
@@ -126,6 +115,25 @@ read_piece(Hash, IpPort, PieceId, LastBlockId, DownloadedBlockId, SubAction) whe
     end,
     {atomic, Result} = mnesia:transaction(Fun),
     Result.
+
+
+%%
+%%
+%%
+update_piece(Hash, IpPort, PieceId, LastBlockId, DownloadedBlockId) ->
+    Piece = read_piece(Hash, IpPort, PieceId, LastBlockId),
+    #erltorrent_store_piece{blocks = Blocks} = Piece,
+    Fun = fun () ->
+        NewBlocks = Blocks -- [DownloadedBlockId],
+        UpdatedPiece = Piece#erltorrent_store_piece{
+            blocks      = NewBlocks,
+            updated_at  = erltorrent_helper:get_milliseconds_timestamp()
+        },
+        % @todo solve error after download restarting
+        mnesia:write(erltorrent_store_piece, UpdatedPiece, write)
+    end,
+    {atomic, _} = mnesia:transaction(Fun),
+    ok.
 
 
 %%
@@ -184,7 +192,8 @@ update_blocks_time(Hash, IpPort, PieceId, BlockId, Time, Field) ->
                 Peer
         end
     end,
-    mnesia:ets(Fun).
+    mnesia:ets(Fun),
+    ok.
 
 
 %%  @doc

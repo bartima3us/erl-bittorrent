@@ -223,7 +223,7 @@ handle_info(start, State) ->
         last_block_id = LastBlockId,
         status = not_requested
     } = PieceData,
-    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, {PeerIp, Port}, PieceId, LastBlockId, 0, read),
+    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, {PeerIp, Port}, PieceId, LastBlockId),
     case do_connect(PeerIp, Port) of
         {ok, Socket} ->
             {ok, ParserPid} = erltorrent_packet:start_link(),
@@ -266,7 +266,7 @@ handle_info(request_piece, State) ->
                     {ok, {OffsetBin, NextLength}} = get_request_data(NextBlockId, PieceSize),
                     PieceIdBin = erltorrent_helper:int_piece_id_to_bin(PieceId),
                     PieceSizeBin = <<NextLength:32>>,
-                    erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, NextBlockId, erltorrent_helper:get_milliseconds_timestamp(), requested_at),
+                    ok = erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, NextBlockId, erltorrent_helper:get_milliseconds_timestamp(), requested_at),
                     erltorrent_message:pipeline_request_piece(MsgAcc, PieceIdBin, OffsetBin, PieceSizeBin)
                 end,
                 <<"">>,
@@ -364,9 +364,8 @@ handle_info({tcp, _Port, Packet}, State) ->
             BlockId = trunc(BlockBegin / ?DEFAULT_REQUEST_LENGTH),
             case lists:member(BlockId, Blocks) of
                 true ->
-                    erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0, BlockId, update),
-                    % @todo maybe change to piece download time?
-                    erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
+                    ok = erltorrent_store:update_piece(Hash, {Ip, Port}, PieceId, 0, BlockId),
+                    ok = erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
                     erltorrent_peer_events:block_downloaded(PieceId, BlockId, self()),
                     {true, Piece};
                 false ->
@@ -380,7 +379,7 @@ handle_info({tcp, _Port, Packet}, State) ->
         unchoke ->
             case lists:filtermap(UpdateFun, Data) of
                 [_|_]  ->
-                    #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0, 0, read),
+                    #erltorrent_store_piece{blocks = UpdatedBlocks} = erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0),
                     PieceData#piece{blocks = UpdatedBlocks, status = not_requested};
                 _      ->
                     PieceData
@@ -431,7 +430,7 @@ handle_info({switch_piece, Piece, Timeout}, State) ->
         last_block_id = LastBlockId,
         status        = not_requested
     } = Piece,
-    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, {PeerIp, Port}, PieceId, LastBlockId, 0, read),
+    #erltorrent_store_piece{blocks = Blocks} = erltorrent_store:read_piece(Hash, {PeerIp, Port}, PieceId, LastBlockId),
     {ok, ParserPid} = erltorrent_packet:start_link(),
     NewState = State#state{
         piece_data      = Piece#piece{blocks = Blocks},
@@ -462,8 +461,8 @@ handle_info({block_downloaded, BlockId}, State) ->
         blocks      = Blocks,
         piece_size  = PieceSize
     } = Piece,
-    erltorrent_store:read_piece(Hash, {Ip, Port}, PieceId, 0, BlockId, update),
-    erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
+    ok = erltorrent_store:update_piece(Hash, {Ip, Port}, PieceId, 0, BlockId),
+    ok = erltorrent_store:update_blocks_time(Hash, {Ip, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
     NewState = State#state{
         piece_data  = Piece#piece{
             blocks = Blocks -- [BlockId],
