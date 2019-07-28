@@ -268,8 +268,11 @@ handle_info({switch_piece, Piece, Timeout}, State) ->
 %%  @todo maybe stopping change to round-robin scheduling?
 handle_info({check_speed, AvgSpeed}, State) ->
     case get_speed_status(State, AvgSpeed) of
-        too_slow -> {stop, too_slow};
-        ok       -> {ok, State}
+        too_slow ->
+            {stop, too_slow};
+        ok       ->
+            NewState = update_timeout(State#state{timeout = AvgSpeed}),
+            {ok, NewState}
     end;
 
 handle_info(cancel, _State) ->

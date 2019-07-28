@@ -642,7 +642,6 @@ do_speed_checking(State) ->
             ok = lists:foreach(
                 fun
                     (#downloading_piece{pid = Pid, status = downloading}) ->
-                        % @todo if end game is enabled, send timeout
                         Pid ! {check_speed, AvgDownloadingTime};
                     (_) ->
                         ok
