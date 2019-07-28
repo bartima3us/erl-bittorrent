@@ -12,6 +12,7 @@
 
 -behaviour(gen_server).
 
+-include_lib("gen_bittorrent/include/gen_bittorrent.hrl").
 -include("erltorrent.hrl").
 -include("erltorrent_store.hrl").
 
@@ -322,7 +323,7 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
         last_piece_id        = LastPieceId,
         pieces_hash          = Pieces,
         pieces_left          = IdsList,
-        blocks_in_piece      = trunc(math:ceil(PieceSize / ?DEFAULT_REQUEST_LENGTH))
+        blocks_in_piece      = trunc(math:ceil(PieceSize / ?REQUEST_LENGTH))
     },
     {noreply, NewState}.
 
@@ -382,7 +383,6 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
     #state{
         hash            = Hash,
         peer_pieces     = PeerPieces,
-        blocks_in_piece = BlocksInPiece,
         end_game        = CurrEndGame,
         slow_peers      = SlowPeers
     } = State,
@@ -426,7 +426,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
 %% Remove process from downloading pieces if it crashes.
 %%
 handle_info({'EXIT', Pid, Reason}, State) when
-    Reason =:= socket_error;
+    element(1, Reason) =:= socket_error;
     Reason =:= too_slow;
     Reason =:= invalid_hash ->
     #state{
@@ -444,7 +444,9 @@ handle_info({'EXIT', Pid, Reason}, State) when
                 invalid_hash ->
                     lager:info("Stopped because invalid hash! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
                     move_peer_to_the_end(StateAcc0, IpPort);
-                socket_error ->
+                {socket_error, tcp_closed} ->
+                    move_peer_to_the_end(StateAcc0, IpPort);
+                {socket_error, _SocketError} ->
                     % Maybe remove on any socket error?
                     remove_peer_from_peer_pieces(StateAcc0, IpPort)
             end;
@@ -640,6 +642,7 @@ do_speed_checking(State) ->
             ok = lists:foreach(
                 fun
                     (#downloading_piece{pid = Pid, status = downloading}) ->
+                        % @todo if end game is enabled, send timeout
                         Pid ! {check_speed, AvgDownloadingTime};
                     (_) ->
                         ok
@@ -869,7 +872,7 @@ find_not_downloading_piece(State = #state{}, Ids) ->
                         <<_:Exclude/binary, PieceHash:20/binary, _Rest/binary>> = PiecesHash,
                         NewAccPiece = [#piece{
                             piece_id        = Id,
-                            last_block_id   = trunc(math:ceil(CurrentPieceSize / ?DEFAULT_REQUEST_LENGTH)),
+                            last_block_id   = trunc(math:ceil(CurrentPieceSize / ?REQUEST_LENGTH)),
                             piece_size      = CurrentPieceSize,
                             piece_hash      = PieceHash,
                             std_piece_size  = PieceSize
@@ -905,21 +908,21 @@ get_current_piece_size(PieceId, PieceLength, #state{last_piece_id = LastPieceId,
 %% @private
 %% Make new downloading pieces state from persisted state if it exists.
 %%
-make_downloading_pieces(Hash, IdsList) ->
-    PersistedPieces = erltorrent_store:read_pieces(Hash),
-    lists:map(
-        fun (Id) ->
-            case lists:keysearch(Id, #erltorrent_store_piece.piece_id, PersistedPieces) of
-                false ->
-                    #downloading_piece{piece_id = Id};
-                {value, #erltorrent_store_piece{status = downloading}} ->
-                    #downloading_piece{piece_id = Id};
-                {value, #erltorrent_store_piece{status = completed}} ->
-                    #downloading_piece{piece_id = Id, status = completed}
-            end
-        end,
-        IdsList
-    ).
+%%make_downloading_pieces(Hash, IdsList) ->
+%%    PersistedPieces = erltorrent_store:read_pieces(Hash),
+%%    lists:map(
+%%        fun (Id) ->
+%%            case lists:keysearch(Id, #erltorrent_store_piece.piece_id, PersistedPieces) of
+%%                false ->
+%%                    #downloading_piece{piece_id = Id};
+%%                {value, #erltorrent_store_piece{status = downloading}} ->
+%%                    #downloading_piece{piece_id = Id};
+%%                {value, #erltorrent_store_piece{status = completed}} ->
+%%                    #downloading_piece{piece_id = Id, status = completed}
+%%            end
+%%        end,
+%%        IdsList
+%%    ).
 
 
 
@@ -958,7 +961,7 @@ assign_peers_test_() ->
         piece_peers             = PiecePeers,
         peer_pieces             = PeerPieces,
         downloading_pieces      = DownloadingPieces,
-        piece_size              = ?DEFAULT_REQUEST_LENGTH * 10,
+        piece_size              = ?REQUEST_LENGTH * 10,
         pieces_hash             = PiecesHash,
         last_piece_id           = 10,
         blocks_in_piece         = 20,

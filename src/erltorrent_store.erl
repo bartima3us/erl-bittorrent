@@ -10,6 +10,7 @@
 -compile([{parse_transform, lager_transform}]).
 -author("bartimaeus").
 
+-include_lib("gen_bittorrent/include/gen_bittorrent.hrl").
 -include("erltorrent.hrl").
 -include("erltorrent_store.hrl").
 

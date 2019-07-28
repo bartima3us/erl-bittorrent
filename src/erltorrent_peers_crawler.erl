@@ -12,6 +12,7 @@
 
 -behaviour(gen_server).
 
+-include_lib("gen_bittorrent/include/gen_bittorrent.hrl").
 -include("erltorrent.hrl").
 
 %% API
@@ -141,31 +142,12 @@ handle_info(crawl, State) ->
     {ok, {dict, Result}} = connect_to_tracker(AnnounceLink, EncodedHash, PeerId, Left, Downloaded),
     PeersIP = get_peers(dict:fetch(<<"peers">>, Result)),
     CrawlAfter = dict:fetch(<<"interval">>, Result),
-%%    lager:info("Crawl min interval = ~p", [dict:fetch(<<"min interval">>, Result)]),
-%%    lager:info("Peers list = ~p", [PeersIP]),
     case dict:is_key(<<"failure reason">>, Result) of
         true  -> lager:info("Failure reason = ~p", [dict:fetch(<<"failure reason">>, Result)]);
         false -> ok
     end,
-%%    AllowedPorts = [
-%%        29856,
-%%        51904,
-%%        29659,
-%%        55510,
-%%        11426 % true
-%%    ],
     ok = lists:foreach(
         fun
-%%            (Peer = {_, Port}) ->
-%%                case lists:member(Port, AllowedPorts) of
-%%                    true ->
-%%                        ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FileName, FullSize, PieceSize);
-%%                    false ->
-%%                        ok
-%%                end;
-%%            (_) ->
-%%                lager:info("xxxxxxxxx PEER DISCARDED!!!!! TESTING MODE. xxxxxxxxx"),
-%%                ok
             (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FullSize)
         end,
         PeersIP

@@ -12,6 +12,7 @@
 
 -behaviour(gen_server).
 
+-include_lib("gen_bittorrent/include/gen_bittorrent.hrl").
 -include("erltorrent.hrl").
 
 %% API
@@ -37,7 +38,7 @@
     hash            :: string(),
     socket          :: port(),
     bitfield        :: binary(),
-    parser_pid      :: pid(),
+    rest_payload    :: payload(),
     try_after       :: integer()
 }).
 
@@ -75,14 +76,12 @@ start_link(Peer, PeerId, Hash, FullSize) ->
 %% @end
 %%--------------------------------------------------------------------
 init([{PeerIp, Port}, PeerId, Hash, FullSize]) ->
-    {ok, ParserPid} = erltorrent_packet:start_link(),
     State = #state{
         full_size    = FullSize,
         peer_ip      = PeerIp,
         port         = Port,
         peer_id      = PeerId,
         hash         = Hash,
-        parser_pid   = ParserPid,
         try_after    = 1000
     },
     self() ! start,
@@ -138,7 +137,7 @@ handle_info(start, State = #state{peer_id = PeerId, hash = Hash, try_after = Try
     NewState = case do_connect(State) of
         {ok, Socket} ->
             % @todo Need to start Kademlia here
-            ok = erltorrent_message:handshake(Socket, PeerId, Hash),
+            ok = gen_bittorrent_message:handshake(Socket, PeerId, Hash),
             ok = erltorrent_helper:get_packet(Socket),
             State#state{socket = Socket};
         {error, emfile} ->
@@ -168,15 +167,15 @@ handle_info({tcp, _Port, Packet}, State) ->
         port         = Port,
         peer_id      = PeerId,
         hash         = Hash,
-        parser_pid   = ParserPid
+        rest_payload = Rest
     } = State,
-    {ok, Data} = erltorrent_packet:parse(ParserPid, Packet),
+    {ok, Data, NewRestPayload} = gen_bittorrent_packet:parse(Packet, Rest),
     ok = case proplists:get_value(handshake, Data) of
-        true -> erltorrent_message:handshake(Socket, PeerId, Hash);
+        true -> gen_bittorrent_message:handshake(Socket, PeerId, Hash);
         _    -> ok
     end,
     ok = case proplists:get_value(keep_alive, Data) of
-        true -> erltorrent_message:keep_alive(Socket);
+        true -> gen_bittorrent_message:keep_alive(Socket);
         _    -> ok
     end,
     case proplists:get_value(bitfield, Data) of
@@ -188,7 +187,7 @@ handle_info({tcp, _Port, Packet}, State) ->
         PieceId  -> erltorrent_leech_server ! {have, PieceId, PeerIp, Port}
     end,
     ok = erltorrent_helper:get_packet(Socket),
-    {noreply, State};
+    {noreply, State#state{rest_payload = NewRestPayload}};
 
 %% @doc
 %% Handle socket close

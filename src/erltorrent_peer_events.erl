@@ -2,7 +2,7 @@
 %%% @author bartimaeus
 %%% @copyright (C) 2019, sarunas.bartusevicius@gmail.com
 %%% @doc
-%%%
+%%% Not used.
 %%% @end
 %%% Created : 03. May 2019 10.34
 %%%-------------------------------------------------------------------
@@ -12,6 +12,7 @@
 
 -behaviour(gen_event).
 
+-include_lib("gen_bittorrent/include/gen_bittorrent.hrl").
 -include("erltorrent.hrl").
 
 %% API
