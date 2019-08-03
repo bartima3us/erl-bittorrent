@@ -912,15 +912,19 @@ get_current_piece_size(PieceId, PieceLength, #state{last_piece_id = LastPieceId,
 %% @private
 %% Assign free peers to download pieces
 %%
-assign_peers(State = #state{peer_pieces = PeerPieces}) ->
+assign_peers(State = #state{peer_pieces = PeerPieces0}) ->
     % Filter failing peers
     FilteredPeerPieces = lists:filter(
         fun ({IpPort, _}) ->
             get_fail_peer_status(State, IpPort)
         end,
-        PeerPieces
+        PeerPieces0
     ),
-    assign_peers(FilteredPeerPieces, State).
+    PeerPieces1 = case FilteredPeerPieces of
+        [_|_] -> FilteredPeerPieces;
+        []    -> PeerPieces0
+    end,
+    assign_peers(PeerPieces1, State).
 
 assign_peers([], State) ->
     State;
