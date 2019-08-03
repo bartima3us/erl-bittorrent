@@ -727,87 +727,6 @@ download() ->
     gen_server:cast(?SERVER, download).
 
 
-%% @private
-%% Assign free peers to download pieces
-%%
-assign_peers(State = #state{peer_pieces = PeerPieces}) ->
-    assign_peers(PeerPieces, State).
-
-assign_peers([], State) ->
-    State;
-
-assign_peers([{IpPort, Ids} | T], State) ->
-    #state{
-        files           = Files,
-        peer_id         = PeerId,
-        hash            = Hash,
-        end_game        = CurrEndGame,
-        slow_peers      = SlowPeers
-    } = State,
-    % @todo maybe move this from fun because currently it is used only once
-    StartPieceDownloadingFun = fun (Pieces, Ip, Port, EndGame) ->
-        ST0 = lists:foldl(
-            fun (Piece = #piece{piece_id = PieceId}, AccState) ->
-                #state{
-                    downloading_pieces = AccDownloadingPieces
-                } = AccState,
-                Timeout = case EndGame of
-                    true  ->
-                        Fails = proplists:get_value(IpPort, SlowPeers, 1),
-                        get_avg_piece_download_time(Hash) * Fails;
-                    false ->
-                        undefined
-                end,
-                {ok, Pid} = erltorrent_leecher:start_link(Files, Ip, Port, PeerId, Hash, Piece, Timeout),
-                case EndGame of
-                    true  -> lager:info("Starting leecher under end game. PieceId=~p, IpPort=~p, Timeout=~p", [PieceId, {Ip, Port}, Timeout]);
-                    false -> lager:info("Starting leecher. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}])
-                end,
-                % Add new downloading pieces
-                AccState#state{
-                    downloading_pieces = [
-                        #downloading_piece{
-                            key         = {PieceId, IpPort},
-                            peer        = IpPort,
-                            piece_id    = PieceId,
-                            pid         = Pid,
-                            status      = downloading
-                        } | AccDownloadingPieces
-                    ]
-                }
-            end,
-            State,
-            Pieces
-        ),
-        ST0#state{end_game = EndGame}
-    end,
-    PeerDownloadingPieces = length(get_downloading_pieces(State, IpPort)),
-    SocketsLimitReached = length(get_downloading_pieces(State)) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT,
-    % @todo maybe fix this (I think limit is needed even in end game)
-    NewState = case {CurrEndGame, (PeerDownloadingPieces > 0 orelse SocketsLimitReached)} of
-        Res when Res =:= {true, false}; % If `end game` is on - limit doesn't matter.
-                 Res =:= {true, true};  % If `end game` is on - limit doesn't matter.
-                 Res =:= {false, false} % If `end game` is off - limit can't be exhausted.
-        ->
-            case get_fail_peer_status(State, IpPort) of
-                true ->
-                    {Ip, Port} = IpPort,
-                    {Pieces, EndGame} = find_not_downloading_piece(State, Ids),
-                    % If end game just enabled, stop slow leechers
-                    ok = case {CurrEndGame, EndGame} of
-                        {false, true} -> do_speed_checking(State);
-                        _             -> ok
-                    end,
-                    StartPieceDownloadingFun(Pieces, Ip, Port, EndGame);
-                false ->
-                    State
-            end;
-       {false, true} ->
-            State
-    end,
-    assign_peers(T, NewState).
-
-
 %%
 %%
 %%
@@ -989,6 +908,88 @@ get_current_piece_size(PieceId, PieceLength, #state{last_piece_id = LastPieceId,
 %%        IdsList
 %%    ).
 
+
+%% @private
+%% Assign free peers to download pieces
+%%
+assign_peers(State = #state{peer_pieces = PeerPieces}) ->
+    % Filter failing peers
+    FilteredPeerPieces = lists:filter(
+        fun ({IpPort, _}) ->
+            get_fail_peer_status(State, IpPort)
+        end,
+        PeerPieces
+    ),
+    assign_peers(FilteredPeerPieces, State).
+
+assign_peers([], State) ->
+    State;
+
+assign_peers([{IpPort, Ids} | T], State) ->
+    #state{
+        files           = Files,
+        peer_id         = PeerId,
+        hash            = Hash,
+        end_game        = CurrEndGame,
+        slow_peers      = SlowPeers
+    } = State,
+    % @todo maybe move this from fun because currently it is used only once
+    StartPieceDownloadingFun = fun (Pieces, Ip, Port, EndGame) ->
+        ST0 = lists:foldl(
+            fun (Piece = #piece{piece_id = PieceId}, AccState) ->
+                #state{
+                    downloading_pieces = AccDownloadingPieces
+                } = AccState,
+                Timeout = case EndGame of
+                    true  ->
+                        Fails = proplists:get_value(IpPort, SlowPeers, 1),
+                        get_avg_piece_download_time(Hash) * Fails;
+                    false ->
+                        undefined
+                end,
+                {ok, Pid} = erltorrent_leecher:start_link(Files, Ip, Port, PeerId, Hash, Piece, Timeout),
+                case EndGame of
+                    true  -> lager:info("Starting leecher under end game. PieceId=~p, IpPort=~p, Timeout=~p", [PieceId, {Ip, Port}, Timeout]);
+                    false -> lager:info("Starting leecher. PieceId=~p, IpPort=~p", [PieceId, {Ip, Port}])
+                end,
+                % Add new downloading pieces
+                AccState#state{
+                    downloading_pieces = [
+                        #downloading_piece{
+                            key         = {PieceId, IpPort},
+                            peer        = IpPort,
+                            piece_id    = PieceId,
+                            pid         = Pid,
+                            status      = downloading
+                        } | AccDownloadingPieces
+                    ]
+                }
+            end,
+            State,
+            Pieces
+        ),
+        ST0#state{end_game = EndGame}
+    end,
+    PeerDownloadingPieces = length(get_downloading_pieces(State, IpPort)),
+    SocketsLimitReached = length(get_downloading_pieces(State)) >= ?SOCKETS_FOR_DOWNLOADING_LIMIT,
+    % @todo maybe fix this (I think limit is needed even in end game)
+    NewState = case {CurrEndGame, (PeerDownloadingPieces > 0 orelse SocketsLimitReached)} of
+        Res when Res =:= {true, false}; % If `end game` is on - limit doesn't matter.
+                 Res =:= {true, true};  % If `end game` is on - limit doesn't matter.
+                 Res =:= {false, false} % If `end game` is off - limit can't be exhausted.
+        ->
+            {Ip, Port} = IpPort,
+            {Pieces, EndGame} = find_not_downloading_piece(State, Ids),
+            % If end game just enabled, stop slow leechers
+            ok = case {CurrEndGame, EndGame} of
+                {false, true} -> do_speed_checking(State);
+                _             -> ok
+            end,
+            StartPieceDownloadingFun(Pieces, Ip, Port, EndGame);
+       {false, true} ->
+            State
+    end,
+    assign_peers(T, NewState).
 
 
 %%%===================================================================
