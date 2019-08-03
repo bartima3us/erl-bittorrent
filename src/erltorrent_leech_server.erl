@@ -30,7 +30,8 @@
     count_downloading_pieces/0,
     all_pieces_except_completed/0,
     get_completion_percentage/1,
-    avg_piece_download_time/0
+    avg_piece_download_time/0,
+    failing_peers/0
 ]).
 
 %% gen_server callbacks
@@ -45,6 +46,7 @@
 
 -define(SERVER, ?MODULE).
 -define(SLOW_PEERS_FAILS_LIMIT, 20).
+-define(FAIL_PEERS_TTL(Fails), Fails * 15000). % ms
 
 -ifndef(TEST).
     -define(SOCKETS_FOR_DOWNLOADING_LIMIT, 100).
@@ -60,6 +62,13 @@
     peer                :: ip_port(),   % Currently downloading peer
     pid                 :: pid(),   % Downloader pid
     status      = false :: false | downloading | completed
+}).
+
+-record(failing_peer, {
+    peer                :: ip_port(),
+    fails               :: pos_integer(),   % Count
+    last_fail_time      :: integer(),       % Time
+    last_fail_reason    :: term()
 }).
 
 -record(state, {
@@ -81,7 +90,8 @@
     pieces_left        = []             :: [integer()],
     assign_peers_timer      = false,
     blocks_in_piece                     :: integer(), % How many blocks are in piece (not the last one which is shorter)
-    slow_peers         = []             :: [{ip_port(), integer()}] % Slow peers and how many times each of if have failed
+    slow_peers         = []             :: [{ip_port(), integer()}], % Slow peers and how many times each of if have failed
+    failing_peers      = []             :: [#failing_peer{}]
 }).
 
 % make start
@@ -143,6 +153,13 @@ avg_piece_download_time() ->
 %%
 all_pieces_except_completed() ->
     gen_server:call(?SERVER, all_pieces_except_completed).
+
+
+%% @doc
+%% Get all failing peers.
+%%
+failing_peers() ->
+    gen_server:call(?SERVER, failing_peers).
 
 
 %%--------------------------------------------------------------------
@@ -227,6 +244,12 @@ handle_call({downloading_piece, Id}, _From, State = #state{downloading_pieces = 
 %%
 handle_call(all_pieces_except_completed, _From, State = #state{pieces_left = PiecesLeft}) ->
     {reply, PiecesLeft, State};
+
+%% @doc
+%% All failing peers.
+%%
+handle_call(failing_peers, _From, State = #state{failing_peers = FailingPeers}) ->
+    {reply, FailingPeers, State};
 
 %% @doc
 %% Handle is end checking call
@@ -373,8 +396,8 @@ handle_info({have, PieceId, Ip, Port}, State = #state{}) ->
 %% Assign pieces for peers to download
 %%
 handle_info(assign_peers, State = #state{}) ->
-    NewState = assign_peers(State),
-    {noreply, NewState#state{assign_peers_timer = false}};
+    NewState1 = assign_peers(State),
+    {noreply, NewState1#state{assign_peers_timer = false}};
 
 %% @doc
 %% Piece downloaded successfully
@@ -444,11 +467,9 @@ handle_info({'EXIT', Pid, Reason}, State) when
                 invalid_hash ->
                     lager:info("Stopped because invalid hash! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
                     move_peer_to_the_end(StateAcc0, IpPort);
-                {socket_error, tcp_closed} ->
-                    move_peer_to_the_end(StateAcc0, IpPort);
-                {socket_error, _SocketError} ->
-                    % Maybe remove on any socket error?
-                    remove_peer_from_peer_pieces(StateAcc0, IpPort)
+                {socket_error, SocketError} ->
+                    StateAcc1 = move_peer_to_the_end(StateAcc0, IpPort),
+                    add_peer_to_failing_peers(StateAcc1, IpPort, SocketError)
             end;
         false ->
             State
@@ -566,12 +587,12 @@ remove_piece_from_piece_peers(State = #state{piece_peers = PiecePeers, pieces_le
 %%
 %%
 %%
-remove_peer_from_peer_pieces(State = #state{peer_pieces = PeerPieces}, IpPort) ->
-    NewPeerPieces = case proplists:is_defined(IpPort, PeerPieces) of
-        true  -> proplists:delete(IpPort, PeerPieces);
-        false -> PeerPieces
-    end,
-    State#state{peer_pieces = NewPeerPieces}.
+%%remove_peer_from_peer_pieces(State = #state{peer_pieces = PeerPieces}, IpPort) ->
+%%    NewPeerPieces = case proplists:is_defined(IpPort, PeerPieces) of
+%%        true  -> proplists:delete(IpPort, PeerPieces);
+%%        false -> PeerPieces
+%%    end,
+%%    State#state{peer_pieces = NewPeerPieces}.
 
 
 %%
@@ -586,6 +607,46 @@ move_peer_to_the_end(State = #state{peer_pieces = PeerPieces0}, IpPort) ->
             PeerPieces0
     end,
     State#state{peer_pieces = NewPeerPieces}.
+
+
+%%  @todo Add a test
+%%
+%%
+add_peer_to_failing_peers(State = #state{failing_peers = FailingPeers}, IpPort, Reason) ->
+    case lists:keysearch(IpPort, #failing_peer.peer, FailingPeers) of
+        {value, CurrFailingPeer = #failing_peer{fails = CurrFails}} ->
+            NewFailingPeer = CurrFailingPeer#failing_peer{
+                fails            = CurrFails + 1,
+                last_fail_reason = Reason,
+                last_fail_time   = erltorrent_helper:get_milliseconds_timestamp()
+            },
+            NewFailingPeers = lists:keyreplace(IpPort, #failing_peer.peer, FailingPeers, CurrFailingPeer),
+            State#state{failing_peers = NewFailingPeers};
+        false ->
+            NewFailingPeer = #failing_peer{
+                peer             = IpPort,
+                fails            = 1,
+                last_fail_reason = Reason,
+                last_fail_time   = erltorrent_helper:get_milliseconds_timestamp()
+            },
+            State#state{failing_peers = [NewFailingPeer | FailingPeers]}
+    end.
+
+
+%%  @todo Add a test
+%%
+%%
+get_fail_peer_status(#state{failing_peers = FailingPeers}, IpPort) ->
+    case lists:keysearch(IpPort, #failing_peer.peer, FailingPeers) of
+        % Because it means that connection was established but for some reason it was closed.
+        {value, #failing_peer{fails = 1, last_fail_reason = tcp_closed}} ->
+            true;
+        {value, #failing_peer{fails = Fails, last_fail_time = LastFailTime}} ->
+            CurrTime = erltorrent_helper:get_milliseconds_timestamp(),
+            CurrTime - LastFailTime >= ?FAIL_PEERS_TTL(Fails);
+        false ->
+            true
+    end.
 
 
 %%
@@ -677,11 +738,11 @@ assign_peers([], State) ->
 
 assign_peers([{IpPort, Ids} | T], State) ->
     #state{
-        files                   = Files,
-        peer_id                 = PeerId,
-        hash                    = Hash,
-        end_game                = CurrEndGame,
-        slow_peers              = SlowPeers
+        files           = Files,
+        peer_id         = PeerId,
+        hash            = Hash,
+        end_game        = CurrEndGame,
+        slow_peers      = SlowPeers
     } = State,
     % @todo maybe move this from fun because currently it is used only once
     StartPieceDownloadingFun = fun (Pieces, Ip, Port, EndGame) ->
@@ -728,14 +789,19 @@ assign_peers([{IpPort, Ids} | T], State) ->
                  Res =:= {true, true};  % If `end game` is on - limit doesn't matter.
                  Res =:= {false, false} % If `end game` is off - limit can't be exhausted.
         ->
-            {Ip, Port} = IpPort,
-            {Pieces, EndGame} = find_not_downloading_piece(State, Ids),
-            % If end game just enabled, stop slow leechers
-            ok = case {CurrEndGame, EndGame} of
-                {false, true} -> do_speed_checking(State);
-                _             -> ok
-            end,
-            StartPieceDownloadingFun(Pieces, Ip, Port, EndGame);
+            case get_fail_peer_status(State, IpPort) of
+                true ->
+                    {Ip, Port} = IpPort,
+                    {Pieces, EndGame} = find_not_downloading_piece(State, Ids),
+                    % If end game just enabled, stop slow leechers
+                    ok = case {CurrEndGame, EndGame} of
+                        {false, true} -> do_speed_checking(State);
+                        _             -> ok
+                    end,
+                    StartPieceDownloadingFun(Pieces, Ip, Port, EndGame);
+                false ->
+                    State
+            end;
        {false, true} ->
             State
     end,

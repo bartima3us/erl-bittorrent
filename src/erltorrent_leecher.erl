@@ -154,7 +154,7 @@ block_requested(PieceId, Offset, _Length, State) ->
         peer_ip      = PeerIp,
         port         = Port
     } = State,
-    OffsetInt = gen_bittorrent_helper:bin_piece_id_to_int(Offset),
+    OffsetInt = gen_bittorrent_helper:bin32_to_int(Offset),
     BlockId = trunc(OffsetInt / ?REQUEST_LENGTH),
     ok = erltorrent_store:update_blocks_time(TorrentHash, {PeerIp, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), requested_at),
     {ok, State}.
@@ -174,11 +174,11 @@ block_downloaded(PieceId, Payload, Offset, Length, State) ->
     #piece{
         std_piece_size  = StdPieceSize
     } = PieceData,
-    OffsetInt = gen_bittorrent_helper:bin_piece_id_to_int(Offset),
+    OffsetInt = gen_bittorrent_helper:bin32_to_int(Offset),
     BlockId = trunc(OffsetInt / ?REQUEST_LENGTH),
     ok = erltorrent_store:update_piece(TorrentHash, {PeerIp, Port}, PieceId, 0, BlockId),
     ok = erltorrent_store:update_blocks_time(TorrentHash, {PeerIp, Port}, PieceId, BlockId, erltorrent_helper:get_milliseconds_timestamp(), received_at),
-    LengthInt = gen_bittorrent_helper:bin_piece_id_to_int(Length),
+    LengthInt = gen_bittorrent_helper:bin32_to_int(Length),
     ok = write_payload(Files, StdPieceSize, PieceId, OffsetInt, Payload, LengthInt),
     {ok, State}.
 

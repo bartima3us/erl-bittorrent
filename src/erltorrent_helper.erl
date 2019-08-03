@@ -15,8 +15,6 @@
     random/1,
     convert_to_list/1,
     get_packet/1,
-    bin_piece_id_to_int/1,
-    int_piece_id_to_bin/1,
     do_exit/2,
     do_exit/1,
     do_monitor/2,
@@ -76,20 +74,6 @@ urlencode(String) ->
         end
     end,
     lists:map(Parse, Value).
-
-
-%% @doc
-%% Convert piece ID from binary to integer
-%% @todo make function generic
-bin_piece_id_to_int(PieceId) when is_binary(PieceId) ->
-    <<Id:32>> = PieceId,
-    Id.
-
-%% @doc
-%% Convert piece ID from integer to binary
-%% @todo make function generic
-int_piece_id_to_bin(PieceId) when is_integer(PieceId) ->
-    <<PieceId:32>>.
 
 
 %% @doc
