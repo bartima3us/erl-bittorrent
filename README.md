@@ -9,6 +9,9 @@ Tested on Lithuanian trackers "Linkomanija.net", "Torrent.lt" and Russian tracke
 
 Works only on Erlang/OTP 20 or newer.
 
+## Status
+Working is in progress. Code is not clean nor covered with tests.
+
 ## Compile and start
 ```
 $ make start

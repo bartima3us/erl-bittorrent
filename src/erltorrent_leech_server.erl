@@ -330,7 +330,7 @@ handle_cast(download, State = #state{torrent_name = TorrentName, piece_peers = P
     LastPieceId = PiecesAmount - 1,
     IdsList = lists:seq(0, LastPieceId),
     AnnounceLink  = binary_to_list(dict:fetch(<<"announce">>, MetaInfo)),
-    PeerId = "-ER0000-45AF6T-NM81-", % @todo make random
+    PeerId = "-ER0000-45AF6T-NM81-", % @todo make by http://www.bittorrent.org/beps/bep_0020.html
     lager:info("File name = ~p, Piece size = ~p bytes, full file size = ~p, Pieces amount = ~p, Hash representation=~p, Hash real=~p", [FileName, PieceSize, FullSize, PiecesAmount, erltorrent_bin_to_hex:bin_to_hex(HashBinString), HashBinString]),
     {ok, _} = erltorrent_peers_crawler_sup:start_child(AnnounceLink, HashBinString, PeerId, FullSize),
     NewPiecesPeers = lists:foldl(fun (Id, Acc) -> [{Id, []} | Acc] end, PiecePeers, IdsList),
