@@ -562,6 +562,7 @@ add_to_piece_peers(State = #state{piece_peers = PiecePeers}, Ip, Port, Bitfield)
         PiecePeers,
         Bitfield
     ),
+    % Rarest first!
     State#state{piece_peers = sort_pieces_by_rarity(NewPiecePeers)}.
 
 

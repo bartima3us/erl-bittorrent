@@ -1,6 +1,6 @@
 {application, erltorrent,
  [
-  {description, ""},
+  {description, "BitTorrent client."},
   {vsn, "1"},
   {registered, []},
   {applications, [
