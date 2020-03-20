@@ -1,5 +1,17 @@
 {"1.1.0",
-[{<<"gen_bittorrent">>,
+[{<<"cowboy">>,
+  {git,"https://github.com/ninenines/cowboy",
+       {ref,"d846827b2a70317914621328bd617e4e5d4d13d8"}},
+  1},
+ {<<"cowlib">>,
+  {git,"https://github.com/ninenines/cowlib",
+       {ref,"75aaeb8415033b07303febbfeba66d6d3413ad06"}},
+  2},
+ {<<"erl_upnp">>,
+  {git,"https://github.com/bartima3us/erl-upnp",
+       {ref,"c6891c21459d4d89bda566c034eb75ba8b7a0eaa"}},
+  0},
+ {<<"gen_bittorrent">>,
   {git,"https://github.com/bartima3us/gen_bittorrent",
        {ref,"2692e02733d8ce4852ce619a1c91b93cc905d884"}},
   0},
@@ -11,7 +23,11 @@
  {<<"meck">>,
   {git,"https://github.com/eproxus/meck",
        {ref,"b8f1432f4860443022ada82c55f9f42ecad0ed85"}},
-  0}]}.
+  0},
+ {<<"ranch">>,
+  {git,"https://github.com/ninenines/ranch",
+       {ref,"3190aef88aea04d6dce8545fe9b4574288903f44"}},
+  2}]}.
 [
 {pkg_hash,[
  {<<"goldrush">>, <<"F06E5D5F1277DA5C413E84D5A2924174182FB108DABB39D5EC548B27424CD106">>}]}
