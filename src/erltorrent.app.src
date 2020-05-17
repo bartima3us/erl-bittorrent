@@ -7,7 +7,9 @@
                   kernel,
                   stdlib,
                   lager,
-                  mnesia
+                  mnesia,
+                  erl_upnp,
+                  erline_dht
                  ]},
   {mod, { erltorrent_app, []}},
   {env, []}

@@ -9,9 +9,10 @@ temp/*
 !temp/.gitkeep
 downloads/*
 !downloads/.gitkeep
-src/test_send.erl
 log/*
 !log/.gitkeep
 *.iml
 db/*
 !db/.gitkeep
+docs
+Mnesia.nonode@nohost

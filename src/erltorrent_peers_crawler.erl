@@ -80,7 +80,12 @@ init([AnnounceLink, Hash, PeerId, FullSize]) ->
         full_size       = FullSize,
         crawl_after     = 10000
     },
-    self() ! crawl,
+    % Add DHT client event handler
+    EventMgrPid = erline_dht:get_event_mgr_pid(node1),
+    gen_event:add_handler(EventMgrPid, erltorrent_dht_event_handler, [PeerId, FullSize]),
+    % Start crawlers
+    self() ! tracker_crawl,
+    self() ! dht_crawl,
     {ok, State}.
 
 
@@ -127,9 +132,9 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-%% Connect to peer, make a handshake
 %%
-handle_info(crawl, State) ->
+handle_info(tracker_crawl, State) ->
+    % Crawl from tracker
     #state{
         announce_link   = AnnounceLink,
         hash            = Hash,
@@ -146,23 +151,22 @@ handle_info(crawl, State) ->
         true  -> lager:info("Failure reason = ~p", [dict:fetch(<<"failure reason">>, Result)]);
         false -> ok
     end,
-    ok = lists:foreach(
-        fun
-            (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FullSize)
-        end,
-        PeersIP
-    ),
+    ok = lists:foreach(fun
+        (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FullSize)
+    end, PeersIP),
     NewCrawlAfter = case CrawlAfter < 20000 of
         true  -> CrawlAfter + 1000;
         false -> CrawlAfter
     end,
-    erlang:send_after(CrawlAfter, self(), crawl),
+    erlang:send_after(CrawlAfter, self(), tracker_crawl),
     {noreply, State#state{crawl_after = NewCrawlAfter}};
 
+handle_info(dht_crawl, State = #state{hash = Hash}) ->
+    % Crawl from DHT
+    ok = erline_dht:get_peers(node1, Hash),
+    erlang:send_after(50000, self(), tracker_crawl),
+    {noreply, State};
 
-%% @doc
-%% Handle unknown messages
-%%
 handle_info(Info, State) ->
     lager:info("Got unknown message! Info=~p, State=~p", [Info, State]),
     {noreply, State}.

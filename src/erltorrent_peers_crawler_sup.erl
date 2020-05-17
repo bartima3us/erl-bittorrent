@@ -27,6 +27,7 @@ start_link() ->
 
 
 start_child(AnnounceLink, Hash, PeerId, FullSize) ->
+    ok = await_started(50),
     supervisor:start_child(?MODULE, [AnnounceLink, Hash, PeerId, FullSize]).
 
 
@@ -44,5 +45,26 @@ init([]) ->
         modules     => [erltorrent_peers_crawler]
     },
     {ok, {{simple_one_for_one, 5, 10}, [Crawler]}}.
+
+
+%% ===================================================================
+%% Internal functions
+%% ===================================================================
+
+%%  @private
+%%  @doc
+%%  Await supervisor to start.
+%%  @end
+await_started(0) ->
+    {error, supervisor_can_not_start};
+
+await_started(Tries) ->
+    case erlang:whereis(?MODULE) of
+        Pid when is_pid(Pid) ->
+            ok;
+        undefined ->
+            timer:sleep(100),
+            await_started(Tries - 1)
+    end.
 
 
