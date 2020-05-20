@@ -22,6 +22,7 @@
 %% API
 -export([
     start_link/7,
+    switch_piece/3,
     get_speed/1
 ]).
 
@@ -73,6 +74,14 @@ start_link(Files, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime) -
     } = PieceData,
     Args = [Files, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime],
     gen_bittorrent:start_link(?MODULE, PeerIp, Port, PeerId, Hash, PieceId, PieceSize, Args, []).
+
+
+%%
+%%
+%%
+switch_piece(Pid, Piece, Timeout) ->
+    Pid ! {switch_piece, Piece, Timeout},
+    ok.
 
 
 %%

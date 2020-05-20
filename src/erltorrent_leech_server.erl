@@ -428,7 +428,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
             end,
             lists:foldl(
                 fun (Piece = #piece{piece_id = NewPieceId}, StateAcc) ->
-                    DownloaderPid ! {switch_piece, Piece, Timeout},
+                    ok = erltorrent_leecher:switch_piece(DownloaderPid, Piece, Timeout),
                     StateAcc0 = change_downloading_piece_status(StateAcc, {PieceId, IpPort}, completed),
                     add_to_downloading_piece(StateAcc0, PieceId, NewPieceId, IpPort)
                 end,

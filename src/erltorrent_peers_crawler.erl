@@ -152,7 +152,9 @@ handle_info(tracker_crawl, State) ->
         false -> ok
     end,
     ok = lists:foreach(fun
-        (Peer) -> ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FullSize)
+        (Peer = {PeerIp, PeerPort}) ->
+            ok = erline_dht_bucket:add_node(node1, PeerIp, PeerPort), % Despite of we don't know whether peer port is the same like DHT node port, still try to add it.
+            ok = erltorrent_peers_sup:add_child(Peer, PeerId, Hash, FullSize)
     end, PeersIP),
     NewCrawlAfter = case CrawlAfter < 20000 of
         true  -> CrawlAfter + 1000;
@@ -164,7 +166,7 @@ handle_info(tracker_crawl, State) ->
 handle_info(dht_crawl, State = #state{hash = Hash}) ->
     % Crawl from DHT
     ok = erline_dht:get_peers(node1, Hash),
-    erlang:send_after(50000, self(), tracker_crawl),
+%%    erlang:send_after(50000, self(), tracker_crawl),
     {noreply, State};
 
 handle_info(Info, State) ->
