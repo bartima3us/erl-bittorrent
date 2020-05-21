@@ -2,7 +2,7 @@
 %%% @author bartimaeus
 %%% @copyright (C) 2019, sarunas.bartusevicius@gmail.com
 %%% @doc
-%%% Not used.
+%%% Used for end game.
 %%% @end
 %%% Created : 03. May 2019 10.34
 %%%-------------------------------------------------------------------
@@ -17,11 +17,10 @@
 
 %% API
 -export([
-    start_link/0,
-    add_sup_handler/2,
-    end_game/0,
-    block_downloaded/3,
-    swap_sup_handler/3
+    start_link/1,
+    add_sup_handler/3,
+    piece_completed/2,
+    delete_handler/2
 ]).
 
 %% gen_event callbacks
@@ -35,9 +34,9 @@
 ]).
 
 -record(state, {
-    downloader_pid      :: pid(),
-    piece_id            :: piece_id_int(),
-    end_game = false    :: boolean()
+    piece_id        :: piece_id_int(),
+    ip_port         :: ip_port(),
+    downloader_pid  :: pid()
 }).
 
 
@@ -52,8 +51,8 @@
 %% @spec start_link() -> {ok, Pid} | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
-    gen_event:start_link({local, ?MODULE}).
+start_link(PieceId) ->
+    gen_event:start_link({local, get_process_name(PieceId)}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -62,29 +61,22 @@ start_link() ->
 %% @spec add_handler() -> ok | {'EXIT', Reason} | term()
 %% @end
 %%--------------------------------------------------------------------
-add_sup_handler(Id, Args) ->
-    gen_event:add_sup_handler(?MODULE, {?MODULE, Id}, Args).
+add_sup_handler(PieceId, IpPort, Pid) ->
+    gen_event:add_sup_handler(get_process_name(PieceId), {?MODULE, Pid}, [PieceId, IpPort, Pid]).
 
 
 %%  @doc
-%%  Swap old handler to new one.
+%%  Delete handler.
 %%
-swap_sup_handler(OldId, NewId, PieceId) ->
-    gen_event:swap_sup_handler(?MODULE, {{?MODULE, OldId}, switch}, {{?MODULE, NewId}, PieceId}).
+delete_handler(PieceId, Pid) ->
+    gen_event:delete_handler(get_process_name(PieceId), {?MODULE, Pid}, []).
 
 
 %%  @doc
-%%  End game mode is enabled.
+%%  Piece has been downloaded successfully.
 %%
-end_game() ->
-    gen_event:notify(?MODULE, end_game).
-
-
-%%  @doc
-%%  Block from piece downloaded successfully.
-%%
-block_downloaded(PieceId, BlockId, From) ->
-    gen_event:notify(?MODULE, {block_downloaded, PieceId, BlockId, From}).
+piece_completed(PieceId, From) ->
+    gen_event:notify(?MODULE, {piece_completed, PieceId, From}).
 
 
 
@@ -101,11 +93,13 @@ block_downloaded(PieceId, BlockId, From) ->
 %% @spec init(Args) -> {ok, State}
 %% @end
 %%--------------------------------------------------------------------
-init([DownloaderPid, PieceId]) ->
-    {ok, #state{downloader_pid = DownloaderPid, piece_id = PieceId}};
-
-init({PieceId, DownloaderPid}) ->
-    {ok, #state{downloader_pid = DownloaderPid, piece_id = PieceId}}.
+init([PieceId, IpPort, DownloaderPid]) ->
+    NewState = #state{
+        piece_id       = PieceId,
+        ip_port        = IpPort,
+        downloader_pid = DownloaderPid
+    },
+    {ok, NewState}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -120,12 +114,10 @@ init({PieceId, DownloaderPid}) ->
 %%                          remove_handler
 %% @end
 %%--------------------------------------------------------------------
-handle_event(end_game, State) ->
-    {ok, State#state{end_game = true}};
-
-handle_event({block_downloaded, PieceId, BlockId, From}, State = #state{piece_id = PieceId, downloader_pid = Pid}) when From =/= Pid ->
-    % Send only to PieceId owners except From (he's a sender so he knows that he downloaded that block)
-    Pid ! {block_downloaded, BlockId},
+handle_event({piece_completed, PieceId, From}, State = #state{ip_port = IpPort, downloader_pid = Pid}) when From =/= Pid ->
+    #state{piece_id = PieceId, ip_port = IpPort} = State,
+    % Send only to PieceId owners except From (he's a sender so he knows that he downloaded that piece)
+    ok = erltorrent_leech_server:piece_completed(IpPort, PieceId, Pid, 0),
     {ok, State};
 
 handle_event(_Event, State) ->
@@ -174,9 +166,6 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(switch, #state{downloader_pid = DownloaderPid}) ->
-    DownloaderPid;
-
 terminate(_Reason, _State) ->
     ok.
 
@@ -196,5 +185,16 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+%%  @private
+%%  @doc
+%%  Get process name.
+%%  @end
+-spec get_process_name(
+    PieceId :: piece_id_int()
+) -> ProcessName :: atom().
+
+get_process_name(PieceId) ->
+    erlang:list_to_atom(?MODULE_STRING ++ "_" ++ erlang:integer_to_list(PieceId)).
 
 

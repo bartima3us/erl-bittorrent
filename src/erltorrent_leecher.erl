@@ -21,8 +21,8 @@
 
 %% API
 -export([
-    start_link/7,
-    switch_piece/3,
+    start_link/6,
+    switch_piece/2,
     get_speed/1
 ]).
 
@@ -50,9 +50,7 @@
     peer_id                     :: binary(),
     torrent_hash                :: binary(),
     started_at                  :: integer(),                   % When piece downloading started in milliseconds timestamp
-    parse_time      = 0         :: integer(),
-    timeout                     :: integer(),                   % Needed for end game mode
-    timeout_ref                 :: reference() | undefined      % Needed for end game mode
+    parse_time      = 0         :: integer()
 }).
 
 
@@ -67,25 +65,25 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Files, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime) ->
+start_link(Files, PeerIp, Port, PeerId, Hash, PieceData) ->
     #piece{
         piece_id    = PieceId,
         piece_size  = PieceSize
     } = PieceData,
-    Args = [Files, PeerIp, Port, PeerId, Hash, PieceData, AvgBlockDownloadTime],
+    Args = [Files, PeerIp, Port, PeerId, Hash, PieceData],
     gen_bittorrent:start_link(?MODULE, PeerIp, Port, PeerId, Hash, PieceId, PieceSize, Args, []).
 
 
 %%
 %%
 %%
-switch_piece(Pid, Piece, Timeout) ->
-    Pid ! {switch_piece, Piece, Timeout},
+switch_piece(Pid, Piece) ->
+    Pid ! {switch_piece, Piece},
     ok.
 
 
 %%
-%%
+%%  @todo temporary. Remove later
 %%
 get_speed(Pid) ->
     gen_server:call(Pid, get_speed).
@@ -107,20 +105,21 @@ get_speed(Pid) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([Files, PeerIp, Port, PeerId, Hash, PieceData, Timeout]) ->
-    State0 = #state{
+init([Files, PeerIp, Port, PeerId, Hash, PieceData]) ->
+    #piece{piece_id = PieceId} = PieceData,
+    State = #state{
         torrent_hash            = Hash,
         files                   = Files,
         piece_data              = PieceData,
         peer_ip                 = PeerIp,
         peer_id                 = PeerId,
         port                    = Port,
-        started_at              = erltorrent_helper:get_milliseconds_timestamp(),
-        timeout                 = Timeout,
-        timeout_ref             = undefined
+        started_at              = erltorrent_helper:get_milliseconds_timestamp()
     },
-    State1 = update_timeout(State0),
-    {ok, State1}.
+    % Don't match any result because process can either start or fail to start (in case it's already started)
+    erltorrent_peer_events:start_link(PieceId),
+    ok = erltorrent_peer_events:add_sup_handler(PieceId, {PeerIp, Port}, self()),
+    {ok, State}.
 
 
 %%
@@ -211,9 +210,8 @@ piece_completed(PieceId, State) ->
         true ->
             ok = erltorrent_store:mark_piece_completed(TorrentHash, PieceId),
             CompletedAt = erltorrent_helper:get_milliseconds_timestamp(),
-            erltorrent_leech_server ! {completed, {PeerIp, Port}, PieceId, self(), CompletedAt - StartedAt},
-            cancel_timeout_timer(State),
-            {ok, State#state{timeout_ref = undefined}};
+            ok = erltorrent_leech_server:piece_completed({PeerIp, Port}, PieceId, self(), CompletedAt - StartedAt),
+            {ok, State};
         false ->
             ok = erltorrent_store:mark_piece_new(TorrentHash, PieceId, LastBlockId),
             {stop, invalid_hash}
@@ -259,33 +257,28 @@ handle_call(get_speed, _From, State) ->
 %%
 %%
 %%
-handle_info({switch_piece, Piece, Timeout}, State) ->
+handle_info({switch_piece, NewPiece}, State) ->
+    #state{
+        peer_ip    = PeerIp,
+        port       = PeerPort,
+        piece_data = OldPieceData
+    } = State,
     #piece{
-        piece_id    = PieceId,
+        piece_id    = NewPieceId,
         piece_size  = PieceSize
-    } = Piece,
+    } = NewPiece,
+    #piece{piece_id = OldPieceId} = OldPieceData,
     NewState = State#state{
         give_up_limit   = 3,
         started_at      = erltorrent_helper:get_milliseconds_timestamp(),
         parse_time      = 0,
-        timeout         = Timeout
+        piece_data      = NewPiece
     },
-    NewState2 = update_timeout(NewState),
-    ok = gen_bittorrent:switch_piece(self(), PieceId, PieceSize),
-    {ok, NewState2};
-
-%%  @todo maybe stopping change to round-robin scheduling?
-handle_info({check_speed, AvgSpeed}, State) ->
-    case get_speed_status(State, AvgSpeed) of
-        too_slow ->
-            {stop, too_slow};
-        ok       ->
-            NewState = update_timeout(State#state{timeout = AvgSpeed}),
-            {ok, NewState}
-    end;
-
-handle_info(cancel, _State) ->
-    {stop, too_slow};
+    ok = erltorrent_peer_events:delete_handler(OldPieceId, self()),
+    erltorrent_peer_events:start_link(NewPieceId),
+    ok = erltorrent_peer_events:add_sup_handler(NewPieceId, {PeerIp, PeerPort}, self()),
+    ok = gen_bittorrent:switch_piece(self(), NewPieceId, PieceSize),
+    {ok, NewState};
 
 handle_info(_Info, State) ->
     {ok, State}.
@@ -308,33 +301,6 @@ terminate(_State) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-%%
-%%
-%%
-cancel_timeout_timer(#state{timeout_ref = TimeoutRef}) ->
-    case is_reference(TimeoutRef) of
-        true  -> erlang:cancel_timer(TimeoutRef);
-        false -> ok
-    end.
-
-
-%%
-%%
-%%
-update_timeout(State = #state{timeout = Timeout}) ->
-    cancel_timeout_timer(State),
-    {Ref, NT} = case Timeout of
-        undefined   ->
-            {undefined, undefined};
-        Timeout     ->
-            NewTimeout = case Timeout < 1000 of
-                true  -> Timeout * ?SLOW_PEER_MULTIPLIER;
-                false -> Timeout
-            end,
-            {erlang:send_after(NewTimeout, self(), cancel), NewTimeout}
-    end,
-    State#state{timeout = NT, timeout_ref = Ref}.
 
 
 %%
@@ -386,25 +352,19 @@ get_file_name(_SizeFrom, _SizeTill, [File]) ->
     File;
 
 get_file_name(SizeFrom, SizeTill, Files) ->
-    FilterFrom = lists:reverse(lists:dropwhile(
-        fun
-            (#{from := FileSizeFrom, till := FileSizeTill}) ->
-                not (SizeFrom >= FileSizeFrom andalso SizeFrom < FileSizeTill)
-        end,
-        Files
-    )),
+    FilterFrom = lists:reverse(lists:dropwhile(fun
+        (#{from := FileSizeFrom, till := FileSizeTill}) ->
+            not (SizeFrom >= FileSizeFrom andalso SizeFrom < FileSizeTill)
+    end, Files)),
     [#{till := LastTill} | _] = FilterFrom,
     case SizeTill >= LastTill of
         true  ->
             lists:reverse(FilterFrom);
         false ->
-            lists:reverse(lists:dropwhile(
-                fun
-                    (#{from := FileSizeFrom, till := FileSizeTill}) ->
-                        not (SizeTill > FileSizeFrom andalso SizeTill =< FileSizeTill)
-                end,
-                FilterFrom
-            ))
+            lists:reverse(lists:dropwhile(fun
+                (#{from := FileSizeFrom, till := FileSizeTill}) ->
+                    not (SizeTill > FileSizeFrom andalso SizeTill =< FileSizeTill)
+            end, FilterFrom))
     end.
 
 
@@ -460,62 +420,6 @@ confirm_piece_hash(Files, PieceData) ->
         false ->
             lager:info("Bad piece=~p checksum!", [PieceId]),
             false
-    end.
-
-
-%%
-%%
-%%
-get_speed_status(State, AvgSpeed) ->
-    #state{
-        torrent_hash = Hash,
-        peer_ip      = PeerIp,
-        port         = Port
-    } = State,
-    PieceTimes = erltorrent_store:read_peer_pieces_time(Hash, {PeerIp, Port}),
-    CurrentTime = erltorrent_helper:get_milliseconds_timestamp(),
-    case PieceTimes of
-        [_|_] ->
-            SpeedStatus = lists:foldl(
-                % @todo DRY - same fun in erltorrent_server:get_avg_piece_download_time/1
-                fun
-                    ([StartedAt, UpdatedAt], {AccTime, AccPieces}) ->
-                        case UpdatedAt of
-                            UpdatedAt when is_integer(StartedAt),
-                                is_integer(UpdatedAt),
-                                is_integer(AccPieces)
-                                ->
-                                {AccTime + (UpdatedAt - StartedAt), AccPieces + 1};
-                            undefined  ->
-                                case (CurrentTime - StartedAt) > (AvgSpeed * ?STOPPED_PEER_MULTIPLIER) of
-                                    true  -> too_slow;
-                                    false -> {AccTime, AccPieces}
-                                end;
-                            _          ->
-                                {AccTime, AccPieces}
-                        end;
-                    (_BlockTime, too_slow) ->
-                        too_slow
-                end,
-                {0, 0},
-                PieceTimes
-            ),
-            case SpeedStatus of
-                too_slow ->
-                    too_slow;
-                {Time, Pieces} ->
-                    case (Time / Pieces) > (AvgSpeed * ?SLOW_PEER_MULTIPLIER) of
-                        true  ->
-                            lager:info("Too slow. Peer=~p, time=~p, pieces=~p, avg speed=~p", [{PeerIp, Port}, Time, Pieces, AvgSpeed]),
-                            too_slow;
-                        false ->
-                            ok
-                    end
-            end;
-        []  ->
-            too_slow;
-        _   ->
-            ok
     end.
 
 
