@@ -62,6 +62,7 @@ start_link(PieceId) ->
 %% @end
 %%--------------------------------------------------------------------
 add_sup_handler(PieceId, IpPort, Pid) ->
+    lager:info("Add handler. PieceId=~p from=~p, pid=~p", [PieceId, IpPort, Pid]),
     gen_event:add_sup_handler(get_process_name(PieceId), {?MODULE, Pid}, [PieceId, IpPort, Pid]).
 
 
@@ -69,6 +70,7 @@ add_sup_handler(PieceId, IpPort, Pid) ->
 %%  Delete handler.
 %%
 delete_handler(PieceId, Pid) ->
+    lager:info("Delete handler. PieceId=~p, pid=~p", [PieceId, Pid]),
     gen_event:delete_handler(get_process_name(PieceId), {?MODULE, Pid}, []).
 
 
@@ -115,6 +117,7 @@ init([PieceId, IpPort, DownloaderPid]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_event({piece_completed, PieceId, From}, State = #state{ip_port = IpPort, downloader_pid = Pid}) when From =/= Pid ->
+    lager:info("Sent piece_completed to PieceId=~p from=~p", [PieceId, IpPort]),
     #state{piece_id = PieceId, ip_port = IpPort} = State,
     % Send only to PieceId owners except From (he's a sender so he knows that he downloaded that piece)
     ok = erltorrent_leech_server:piece_completed(IpPort, PieceId, Pid, 0),
