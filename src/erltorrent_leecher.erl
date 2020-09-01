@@ -259,13 +259,15 @@ handle_call(get_speed, _From, State) ->
 %%
 handle_info({switch_piece, NewPiece}, State) ->
     #state{
-        peer_ip    = PeerIp,
-        port       = PeerPort,
-        piece_data = OldPieceData
+        peer_ip      = PeerIp,
+        port         = PeerPort,
+        piece_data   = OldPieceData,
+        torrent_hash = TorrentHash
     } = State,
     #piece{
-        piece_id    = NewPieceId,
-        piece_size  = PieceSize
+        piece_id      = NewPieceId,
+        piece_size    = PieceSize,
+        last_block_id = LastBlockId
     } = NewPiece,
     #piece{piece_id = OldPieceId} = OldPieceData,
     NewState = State#state{
@@ -277,6 +279,7 @@ handle_info({switch_piece, NewPiece}, State) ->
     ok = erltorrent_peer_events:delete_handler(OldPieceId, self()),
     erltorrent_peer_events:start_link(NewPieceId),
     ok = erltorrent_peer_events:add_sup_handler(NewPieceId, {PeerIp, PeerPort}, self()),
+    #erltorrent_store_piece{} = erltorrent_store:read_piece(TorrentHash, {PeerIp, PeerPort}, NewPieceId, LastBlockId),
     ok = gen_bittorrent:switch_piece(self(), NewPieceId, PieceSize),
     {ok, NewState};
 

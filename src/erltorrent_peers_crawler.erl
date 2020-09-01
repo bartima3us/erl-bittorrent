@@ -81,6 +81,7 @@ init([AnnounceLink, Hash, PeerId, FullSize]) ->
         crawl_after     = 10000
     },
     % Add DHT client event handler
+    % @todo add new event manager pid after supervisor restart
     EventMgrPid = erline_dht:get_event_mgr_pid(node1),
     gen_event:add_handler(EventMgrPid, erltorrent_dht_event_handler, [PeerId, FullSize]),
     % Start crawlers
@@ -165,8 +166,8 @@ handle_info(tracker_crawl, State) ->
 
 handle_info(dht_crawl, State = #state{hash = Hash}) ->
     % Crawl from DHT
+    % @todo makes stoppage of the sending
     ok = erline_dht:get_peers(node1, Hash),
-%%    erlang:send_after(50000, self(), tracker_crawl),
     {noreply, State};
 
 handle_info(Info, State) ->
