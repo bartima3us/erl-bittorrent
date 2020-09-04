@@ -13,10 +13,15 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_child/4]).
+-export([
+    start_link/0,
+    start_crawler/4
+]).
 
 %% Supervisor callbacks
--export([init/1]).
+-export([
+    init/1
+]).
 
 %% ===================================================================
 %% API functions
@@ -25,10 +30,33 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-
-start_child(AnnounceLink, Hash, PeerId, FullSize) ->
+start_crawler(AnnounceLink, Hash, PeerId, FullSize) ->
     ok = await_started(50),
-    supervisor:start_child(?MODULE, [AnnounceLink, Hash, PeerId, FullSize]).
+    CurrentChildren = supervisor:which_children(?MODULE),
+    case lists:keysearch(erline_dht, 1, CurrentChildren) of
+        false ->
+            DhtChild = #{
+                id          => erline_dht,
+                start       => {erline_dht_sup, start_link, []},
+                restart     => permanent,
+                shutdown    => 5000,
+                type        => worker,
+                modules     => [erline_dht_sup]
+            },
+            CrawlerChild = #{
+                id          => peers_crawler,
+                start       => {erltorrent_peers_crawler, start_link, [AnnounceLink, Hash, PeerId, FullSize]},
+                restart     => permanent,
+                shutdown    => 5000,
+                type        => worker,
+                modules     => [erltorrent_peers_crawler]
+            },
+            {ok, _} = supervisor:start_child(?MODULE, DhtChild),
+            {ok, _} = supervisor:start_child(?MODULE, CrawlerChild),
+            ok;
+        {value, _} ->
+            ok
+    end.
 
 
 %% ===================================================================
@@ -36,15 +64,7 @@ start_child(AnnounceLink, Hash, PeerId, FullSize) ->
 %% ===================================================================
 
 init([]) ->
-    Crawler = #{
-        id          => peers_crawler,
-        start       => {erltorrent_peers_crawler, start_link, []},
-        restart     => permanent,
-        shutdown    => 5000,
-        type        => worker,
-        modules     => [erltorrent_peers_crawler]
-    },
-    {ok, {{simple_one_for_one, 5, 10}, [Crawler]}}.
+    {ok, {{rest_for_one, 5, 10}, []}}.
 
 
 %% ===================================================================
