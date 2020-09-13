@@ -91,7 +91,6 @@
     pieces_left        = []             :: [integer()],
     assign_peers_timer      = false,
     blocks_in_piece                     :: integer(), % How many blocks are in piece (not the last one which is shorter)
-    slow_peers         = []             :: [{ip_port(), integer()}], % @todo don't need anymore?       Slow peers and how many times each of if have failed
     failing_peers      = []             :: [#failing_peer{}] % @todo don't need anymore?
 }).
 
@@ -432,8 +431,7 @@ handle_info({completed, IpPort, PieceId, DownloaderPid, OverallTime}, State) ->
 %%
 handle_info({'EXIT', Pid, Reason}, State) when
     element(1, Reason) =:= socket_error;
-    Reason =:= too_slow;
-    Reason =:= invalid_hash ->
+    Reason =:= invalid_hash -> % @todo: don't stop, but assign other piece after invalid_hash
     #state{
         downloading_pieces = DownloadingPieces,
         assign_peers_timer = AssignPeersTimer
@@ -442,10 +440,6 @@ handle_info({'EXIT', Pid, Reason}, State) when
         {value, #downloading_piece{piece_id = PieceId, key = {_, IpPort}}} ->
             StateAcc0 = remove_from_downloading_pieces(State, {PieceId, IpPort}),
             case Reason of
-                too_slow ->
-                    lager:info("Stopped because too slow! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
-                    State1 = move_peer_to_the_end(StateAcc0, IpPort),
-                    add_to_slow_peers(State1, IpPort);
                 invalid_hash ->
                     lager:info("Stopped because invalid hash! PieceId=~p, IpPort=~p", [PieceId, IpPort]),
                     move_peer_to_the_end(StateAcc0, IpPort);
@@ -634,18 +628,6 @@ get_fail_peer_status(#state{failing_peers = FailingPeers}, IpPort) ->
         false ->
             true
     end.
-
-
-%%
-%%
-%%
-add_to_slow_peers(State = #state{slow_peers = SlowPeers}, IpPort) ->
-    NewSlowPeers = case proplists:get_value(IpPort, SlowPeers) of
-        undefined               -> [{IpPort, 1} | SlowPeers];
-        ?SLOW_PEERS_FAILS_LIMIT -> SlowPeers;
-        Fails                   -> [{IpPort, Fails + 1} | proplists:delete(IpPort, SlowPeers)]
-    end,
-    State#state{slow_peers = NewSlowPeers}.
 
 
 %%
@@ -1180,38 +1162,6 @@ move_peer_to_the_end_test_() ->
             #state{peer_pieces = Result},
             move_peer_to_the_end(#state{peer_pieces = PeerPieces}, {{127,0,0,2}, 9871})
         )
-    ].
-
-
-add_to_slow_peers_test_() ->
-    [
-        {"Add new slow peer.",
-            fun() ->
-                SlowPeers = [{{{127,0,0,2}, 9872}, 2}],
-                ?assertEqual(
-                    #state{slow_peers = [{{{127,0,0,2}, 9871}, 1}, {{{127,0,0,2}, 9872}, 2}]},
-                    add_to_slow_peers(#state{slow_peers = SlowPeers}, {{127,0,0,2}, 9871})
-                )
-            end
-        },
-        {"Increase existing slow peer fails.",
-            fun() ->
-                SlowPeers = [{{{127,0,0,2}, 9872}, 2}, {{{127,0,0,2}, 9874}, 4}],
-                ?assertEqual(
-                    #state{slow_peers = [{{{127,0,0,2}, 9874}, 5}, {{{127,0,0,2}, 9872}, 2}]},
-                    add_to_slow_peers(#state{slow_peers = SlowPeers}, {{127,0,0,2}, 9874})
-                )
-            end
-        },
-        {"Slow peer fails limit has reached.",
-            fun() ->
-                SlowPeers = [{{{127,0,0,2}, 9872}, 2}, {{{127,0,0,2}, 9874}, ?SLOW_PEERS_FAILS_LIMIT}],
-                ?assertEqual(
-                    #state{slow_peers = SlowPeers},
-                    add_to_slow_peers(#state{slow_peers = SlowPeers}, {{127,0,0,2}, 9874})
-                )
-            end
-        }
     ].
 
 

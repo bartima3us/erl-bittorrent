@@ -213,6 +213,7 @@ piece_completed(PieceId, State) ->
             ok = erltorrent_leech_server:piece_completed({PeerIp, Port}, PieceId, self(), CompletedAt - StartedAt),
             {ok, State};
         false ->
+            % @todo: don't stop, but assign other piece after invalid_hash
             ok = erltorrent_store:mark_piece_new(TorrentHash, PieceId, LastBlockId),
             {stop, invalid_hash}
     end.
