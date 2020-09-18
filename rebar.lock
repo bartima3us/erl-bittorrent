@@ -13,7 +13,7 @@
   0},
  {<<"erline_dht">>,
   {git,"https://github.com/bartima3us/erline-dht",
-       {ref,"b0d022f333839fd096e44eb98537ea2244c1d14d"}},
+       {ref,"91fb887f5da85b7db68aa1747c41647a20911bba"}},
   0},
  {<<"gen_bittorrent">>,
   {git,"https://github.com/bartima3us/gen_bittorrent",

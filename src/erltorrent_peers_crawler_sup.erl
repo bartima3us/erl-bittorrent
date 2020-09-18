@@ -32,31 +32,16 @@ start_link() ->
 
 start_crawler(AnnounceLink, Hash, PeerId, FullSize) ->
     ok = await_started(50),
-    CurrentChildren = supervisor:which_children(?MODULE),
-    case lists:keysearch(erline_dht, 1, CurrentChildren) of
-        false ->
-            DhtChild = #{
-                id          => erline_dht,
-                start       => {erline_dht_sup, start_link, []},
-                restart     => permanent,
-                shutdown    => 5000,
-                type        => worker,
-                modules     => [erline_dht_sup]
-            },
-            CrawlerChild = #{
-                id          => peers_crawler,
-                start       => {erltorrent_peers_crawler, start_link, [AnnounceLink, Hash, PeerId, FullSize]},
-                restart     => permanent,
-                shutdown    => 5000,
-                type        => worker,
-                modules     => [erltorrent_peers_crawler]
-            },
-            {ok, _} = supervisor:start_child(?MODULE, DhtChild),
-            {ok, _} = supervisor:start_child(?MODULE, CrawlerChild),
-            ok;
-        {value, _} ->
-            ok
-    end.
+    CrawlerChild = #{
+        id          => peers_crawler,
+        start       => {erltorrent_peers_crawler, start_link, [AnnounceLink, Hash, PeerId, FullSize]},
+        restart     => permanent,
+        shutdown    => 5000,
+        type        => worker,
+        modules     => [erltorrent_peers_crawler]
+    },
+    {ok, _} = supervisor:start_child(?MODULE, CrawlerChild),
+    ok.
 
 
 %% ===================================================================
@@ -64,7 +49,7 @@ start_crawler(AnnounceLink, Hash, PeerId, FullSize) ->
 %% ===================================================================
 
 init([]) ->
-    {ok, {{rest_for_one, 5, 10}, []}}.
+    {ok, {{one_for_one, 5, 10}, []}}.
 
 
 %% ===================================================================

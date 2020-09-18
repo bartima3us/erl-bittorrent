@@ -8,9 +8,9 @@
                   stdlib,
                   lager,
                   mnesia,
-                  erl_upnp
+                  erl_upnp,
+                  erline_dht
                  ]},
-  {included_applications, [erline_dht]}, % erline_dht root sup is under erlbittorrent sup tree
   {mod, { erltorrent_app, []}},
   {env, []}
  ]}.
