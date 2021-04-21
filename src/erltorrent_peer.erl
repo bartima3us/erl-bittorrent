@@ -181,11 +181,11 @@ handle_info({tcp, _Port, Packet}, State) ->
     end,
     case proplists:get_value(bitfield, Data) of
         undefined -> ok;
-        #bitfield_data{parsed = ParsedBitfield} -> erltorrent_leech_server ! {bitfield, ParsedBitfield, PeerIp, Port}
+        #bitfield_data{parsed = ParsedBitfield} -> erltorrent_leech_server:bitfield(ParsedBitfield, PeerIp, Port)
     end,
     case proplists:get_value(have, Data) of
         undefined -> ok;
-        PieceId  -> erltorrent_leech_server ! {have, PieceId, PeerIp, Port}
+        PieceId   -> erltorrent_leech_server:have(PieceId, PeerIp, Port)
     end,
     ok = erltorrent_helper:get_packet(Socket),
     {noreply, State#state{rest_payload = NewRestPayload}};

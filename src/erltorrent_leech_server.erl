@@ -19,7 +19,9 @@
 %% API
 -export([
     start_link/1,
-    piece_completed/4
+    piece_completed/4,
+    bitfield/3,
+    have/3
 ]).
 
 %% API mostly for debugging purposes
@@ -104,6 +106,19 @@
 %%% API
 %%%===================================================================
 
+
+%% @doc
+%% Get bitfield
+%%
+bitfield(ParsedBitfield, PeerIp, Port) ->
+    ?SERVER ! {bitfield, ParsedBitfield, PeerIp, Port}.
+
+
+%% @doc
+%% Get bitfield
+%%
+have(PieceId, PeerIp, Port) ->
+    ?SERVER ! {have, PieceId, PeerIp, Port}.
 
 
 %% @doc
